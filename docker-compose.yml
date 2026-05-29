@@ -1,0 +1,97 @@
+x-backend-env: &backend-env
+  DATABASE_URL: sqlite+aiosqlite:////app/data/agentflow.db
+  CHECKPOINTER_DB_PATH: /app/data/checkpointer.db
+  REDIS_URL: redis://redis:6379/0
+  CELERY_BROKER_URL: redis://redis:6379/0
+  CELERY_RESULT_BACKEND: redis://redis:6379/1
+  OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+  ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+  TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+  CHROMA_PERSIST_DIR: /app/data/chroma
+  CORS_ORIGINS: '["http://localhost:3001","http://localhost:3000","http://localhost:5173"]'
+
+x-backend-volumes: &backend-volumes
+  - ./backend:/app
+
+services:
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6380:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  backend:
+    build: ./backend
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    ports:
+      - "8000:8000"
+    environment:
+      <<: *backend-env
+    volumes: *backend-volumes
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  worker:
+    build: ./backend
+    command: celery -A app.workers.celery_app worker --loglevel=info --concurrency=4
+    environment:
+      <<: *backend-env
+    volumes:
+      - ./backend:/app
+      - ./backend/data/chroma_cache:/root/.cache/chroma
+    depends_on:
+      redis:
+        condition: service_healthy
+      backend:
+        condition: service_healthy
+    restart: unless-stopped
+
+  beat:
+    build: ./backend
+    command: celery -A app.workers.celery_app beat --loglevel=info
+    environment:
+      <<: *backend-env
+    volumes: *backend-volumes
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  telegram_bot:
+    build: ./backend
+    command: python -m app.integrations.telegram.bot
+    environment:
+      <<: *backend-env
+    volumes: *backend-volumes
+    depends_on:
+      backend:
+        condition: service_healthy
+    restart: unless-stopped
+    profiles:
+      - telegram
+
+  frontend:
+    build: ./frontend
+    ports:
+      - "3002:3001"
+    environment:
+      VITE_API_BASE_URL: ""
+      VITE_PROXY_TARGET: "http://backend:8000"
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+volumes:
+  redis_data:
