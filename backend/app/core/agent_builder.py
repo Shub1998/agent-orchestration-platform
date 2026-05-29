@@ -131,6 +131,14 @@ class AgentBuilder:
                     "model": model,
                 },
             )
+            # Persist the full output as a dedicated event so the UI can render
+            # a readable inter-agent message thread (not just the raw log stream).
+            log_emitter.emit(
+                execution_id, "agent_message",
+                output[:4000],
+                agent_id=agent_id, agent_name=agent_name,
+                metadata={"model": model, "truncated": len(output) > 4000},
+            )
 
             if memory_enabled and input_text and output:
                 memory_manager.store(agent_id, input_text, output, execution_id)

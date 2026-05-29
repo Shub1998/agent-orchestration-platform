@@ -16,6 +16,7 @@ async def log_stream(websocket: WebSocket, execution_id: str):
 
     try:
         await websocket.send_text(json.dumps({"type": "connected", "execution_id": execution_id}))
+        done = asyncio.Event()
 
         async def listen():
             async for message in pubsub.listen():
@@ -23,10 +24,24 @@ async def log_stream(websocket: WebSocket, execution_id: str):
                     data = message["data"]
                     await websocket.send_text(data)
                     parsed = json.loads(data)
-                    if parsed.get("type") == "execution_complete":
+                    if parsed.get("type") == "execution_complete" and parsed.get("status") in ("completed", "failed", "cancelled"):
+                        done.set()
                         break
 
-        await asyncio.wait_for(listen(), timeout=600)
+        async def ping():
+            # Send a heartbeat every 15s to keep the Vite/nginx proxy from timing
+            # out the WS during long approval waits where no log messages flow.
+            while not done.is_set():
+                try:
+                    await websocket.send_text(json.dumps({"type": "ping"}))
+                except Exception:
+                    break
+                await asyncio.sleep(15)
+
+        await asyncio.gather(
+            asyncio.wait_for(listen(), timeout=3600),
+            ping(),
+        )
 
     except (WebSocketDisconnect, asyncio.TimeoutError):
         pass

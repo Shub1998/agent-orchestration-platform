@@ -1,11 +1,12 @@
 import sqlite3
 import json
 import os
+from app.workers.execution_tasks import _sqlite_path
 
 
 def find_workflow_for_chat(chat_id: int) -> dict | None:
     """Find a telegram-enabled workflow for the given chat_id."""
-    db_path = "./data/agentflow.db"
+    db_path = _sqlite_path()
     if not os.path.exists(db_path):
         return None
     try:
@@ -39,7 +40,7 @@ def create_execution(workflow_id: str, chat_id: int, text: str) -> str | None:
     """Create an execution record for a Telegram-triggered workflow."""
     import uuid
     from datetime import datetime
-    db_path = "./data/agentflow.db"
+    db_path = _sqlite_path()
     execution_id = str(uuid.uuid4())
     try:
         conn = sqlite3.connect(db_path)

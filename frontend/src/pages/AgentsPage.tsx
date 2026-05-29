@@ -45,8 +45,8 @@ function AgentForm({ agent, onSave, onClose }: { agent?: Agent; onSave: (data: P
   }
 
   return (
-    <div className="space-y-4 max-h-[75vh] overflow-y-auto pr-1">
-      <div className="grid grid-cols-2 gap-4">
+    <div className="space-y-4 max-h-[75vh] overflow-y-auto px-1">
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
         <div>
           <Label>Name *</Label>
           <Input value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))} placeholder="Research Agent" />
@@ -67,7 +67,7 @@ function AgentForm({ agent, onSave, onClose }: { agent?: Agent; onSave: (data: P
         <Textarea value={form.system_prompt} onChange={e => setForm(f => ({ ...f, system_prompt: e.target.value }))} placeholder="You are an expert researcher..." className="h-28" />
       </div>
 
-      <div className="grid grid-cols-2 gap-4">
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
         <div>
           <Label>Model</Label>
           <Select value={form.model} onValueChange={v => {
@@ -101,7 +101,7 @@ function AgentForm({ agent, onSave, onClose }: { agent?: Agent; onSave: (data: P
         </div>
       </div>
 
-      <div className="flex items-center gap-6">
+      <div className="flex flex-wrap items-center gap-4 md:gap-6">
         <label className="flex items-center gap-2 text-sm cursor-pointer">
           <input type="checkbox" checked={form.memory_enabled} onChange={e => setForm(f => ({ ...f, memory_enabled: e.target.checked }))} className="rounded" />
           Enable Memory
@@ -114,7 +114,7 @@ function AgentForm({ agent, onSave, onClose }: { agent?: Agent; onSave: (data: P
 
       <div className="space-y-3 p-3 bg-orange-50 rounded-lg border border-orange-100">
         <Label className="flex items-center gap-1 text-orange-700"><Shield className="h-3.5 w-3.5" />Guardrails</Label>
-        <div className="grid grid-cols-2 gap-3">
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
           <div>
             <Label className="text-xs text-gray-500">Max output tokens</Label>
             <Input type="number" min={256} max={32000} value={form.max_output_tokens}
@@ -150,7 +150,7 @@ function AgentForm({ agent, onSave, onClose }: { agent?: Agent; onSave: (data: P
 
       <div>
         <Label className="mb-2 block">Avatar Color</Label>
-        <div className="flex gap-2">
+        <div className="flex flex-wrap gap-2">
           {AVATAR_COLORS.map(color => (
             <button key={color} onClick={() => setForm(f => ({ ...f, avatar_color: color }))}
               className={`h-7 w-7 rounded-full border-2 transition-all ${form.avatar_color === color ? 'border-gray-800 scale-110' : 'border-transparent'}`}
@@ -226,13 +226,13 @@ export function AgentsPage() {
   }
 
   return (
-    <div className="p-8">
-      <div className="flex items-center justify-between mb-8">
+    <div className="p-4 md:p-6 lg:p-8">
+      <div className="flex flex-wrap items-start justify-between gap-3 mb-6 md:mb-8">
         <div>
-          <h1 className="text-3xl font-bold text-gray-900">Agents</h1>
-          <p className="text-gray-500 mt-1">Create and configure your AI agents</p>
+          <h1 className="text-2xl md:text-3xl font-bold text-gray-900">Agents</h1>
+          <p className="text-gray-500 mt-1 text-sm md:text-base">Create and configure your AI agents</p>
         </div>
-        <Button onClick={() => setShowCreate(true)}>
+        <Button onClick={() => setShowCreate(true)} className="shrink-0">
           <Plus className="h-4 w-4 mr-2" /> New Agent
         </Button>
       </div>
@@ -247,28 +247,29 @@ export function AgentsPage() {
           <Button onClick={() => setShowCreate(true)} className="mt-4">Create Agent</Button>
         </div>
       ) : (
-        <div className="grid grid-cols-3 gap-6">
+        <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-4 md:gap-6">
           {agents.map(agent => (
             <Card key={agent.id} className="hover:shadow-md transition-shadow">
               <CardHeader className="pb-3">
-                <div className="flex items-start justify-between">
-                  <div className="flex items-center gap-3">
-                    <div className="h-10 w-10 rounded-full flex items-center justify-center text-white font-bold text-lg" style={{ backgroundColor: agent.avatar_color }}>
+                <div className="flex items-start justify-between gap-2">
+                  <div className="flex items-center gap-3 min-w-0">
+                    <div className="h-10 w-10 shrink-0 rounded-full flex items-center justify-center text-white font-bold text-lg"
+                      style={{ backgroundColor: agent.avatar_color }}>
                       {agent.name[0].toUpperCase()}
                     </div>
-                    <div>
-                      <CardTitle className="text-base">{agent.name}</CardTitle>
-                      <p className="text-xs text-gray-500 capitalize">{agent.role}</p>
+                    <div className="min-w-0">
+                      <CardTitle className="text-base truncate">{agent.name}</CardTitle>
+                      <p className="text-xs text-gray-500 capitalize truncate">{agent.role}</p>
                     </div>
                   </div>
-                  <div className="flex gap-1">
-                    <Button variant="ghost" size="icon" onClick={() => setTestAgent(agent)} className="h-8 w-8">
+                  <div className="flex shrink-0 gap-0.5">
+                    <Button variant="ghost" size="icon" onClick={() => setTestAgent(agent)} className="h-8 w-8" title="Test">
                       <Zap className="h-4 w-4" />
                     </Button>
-                    <Button variant="ghost" size="icon" onClick={() => setEditAgent(agent)} className="h-8 w-8">
+                    <Button variant="ghost" size="icon" onClick={() => setEditAgent(agent)} className="h-8 w-8" title="Edit">
                       <Edit className="h-4 w-4" />
                     </Button>
-                    <Button variant="ghost" size="icon" onClick={() => deleteAgent.mutate(agent.id)} className="h-8 w-8 text-red-500 hover:text-red-700">
+                    <Button variant="ghost" size="icon" onClick={() => deleteAgent.mutate(agent.id)} className="h-8 w-8 text-red-500 hover:text-red-700" title="Delete">
                       <Trash2 className="h-4 w-4" />
                     </Button>
                   </div>
@@ -289,7 +290,7 @@ export function AgentsPage() {
       )}
 
       <Dialog open={showCreate} onOpenChange={v => { setShowCreate(v); setFormError('') }}>
-        <DialogContent className="max-w-2xl">
+        <DialogContent className="w-[95vw] max-w-2xl">
           <DialogHeader><DialogTitle>Create New Agent</DialogTitle></DialogHeader>
           {formError && <div className="bg-red-50 border border-red-200 text-red-700 rounded-lg px-4 py-2 text-sm">{formError}</div>}
           <AgentForm onSave={handleCreate} onClose={() => { setShowCreate(false); setFormError('') }} />
@@ -297,7 +298,7 @@ export function AgentsPage() {
       </Dialog>
 
       <Dialog open={!!editAgent} onOpenChange={v => { if (!v) { setEditAgent(null); setFormError('') } }}>
-        <DialogContent className="max-w-2xl">
+        <DialogContent className="w-[95vw] max-w-2xl">
           <DialogHeader><DialogTitle>Edit Agent</DialogTitle></DialogHeader>
           {formError && <div className="bg-red-50 border border-red-200 text-red-700 rounded-lg px-4 py-2 text-sm">{formError}</div>}
           {editAgent && <AgentForm agent={editAgent} onSave={handleUpdate} onClose={() => { setEditAgent(null); setFormError('') }} />}
@@ -305,7 +306,7 @@ export function AgentsPage() {
       </Dialog>
 
       <Dialog open={!!testAgent} onOpenChange={() => setTestAgent(null)}>
-        <DialogContent className="max-w-lg">
+        <DialogContent className="w-[95vw] max-w-lg">
           <DialogHeader><DialogTitle>Test: {testAgent?.name}</DialogTitle></DialogHeader>
           {testAgent && <TestPanel agent={testAgent} onClose={() => setTestAgent(null)} />}
         </DialogContent>

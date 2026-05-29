@@ -63,12 +63,13 @@ async def approve_execution(execution_id: str, body: ApproveRequest, db: AsyncSe
     if execution.status != "awaiting_approval":
         raise HTTPException(400, f"Execution is not awaiting approval (status: {execution.status})")
 
-    import redis as _redis
-    from app.config import settings
-    r = _redis.from_url(settings.REDIS_URL, decode_responses=True)
-    r.set(f"approval:{execution_id}", body.decision, ex=7200)
-    if body.comment:
-        r.set(f"approval_comment:{execution_id}", body.comment, ex=7200)
+    from app.workers.execution_tasks import resume_workflow_task
+    resume_workflow_task.delay(
+        execution.workflow_id,
+        execution_id,
+        body.decision,
+        body.comment,
+    )
 
     return {"status": "ok", "decision": body.decision, "execution_id": execution_id}
 

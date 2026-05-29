@@ -44,9 +44,7 @@ function WorkflowSettingsDialog({ workflow, onClose }: { workflow: Workflow; onC
       <div>
         <Label>Trigger Type</Label>
         <Select value={triggerType} onValueChange={setTriggerType}>
-          <SelectTrigger className="mt-1">
-            <SelectValue />
-          </SelectTrigger>
+          <SelectTrigger className="mt-1"><SelectValue /></SelectTrigger>
           <SelectContent>
             <SelectItem value="manual">Manual (UI / API)</SelectItem>
             <SelectItem value="schedule">Scheduled (Cron)</SelectItem>
@@ -70,12 +68,8 @@ function WorkflowSettingsDialog({ workflow, onClose }: { workflow: Workflow; onC
           </Select>
           <div>
             <Label className="text-xs text-gray-500">Cron expression</Label>
-            <Input
-              value={cronValue}
-              onChange={e => { setCronValue(e.target.value); setCronPreset('custom') }}
-              placeholder="0 9 * * *"
-              className="font-mono mt-1"
-            />
+            <Input value={cronValue} onChange={e => { setCronValue(e.target.value); setCronPreset('custom') }}
+              placeholder="0 9 * * *" className="font-mono mt-1" />
             <p className="text-xs text-gray-400 mt-1">
               Format: minute hour day month weekday — e.g. <code>0 9 * * 1</code> = every Monday 9am
             </p>
@@ -90,11 +84,7 @@ function WorkflowSettingsDialog({ workflow, onClose }: { workflow: Workflow; onC
       {triggerType === 'telegram' && (
         <div className="space-y-2 p-4 bg-blue-50 rounded-lg border border-blue-100">
           <Label>Allowed Telegram Chat IDs</Label>
-          <Input
-            value={telegramChatIds}
-            onChange={e => setTelegramChatIds(e.target.value)}
-            placeholder="123456789, 987654321"
-          />
+          <Input value={telegramChatIds} onChange={e => setTelegramChatIds(e.target.value)} placeholder="123456789, 987654321" />
           <p className="text-xs text-gray-400">
             Comma-separated. Leave blank to accept messages from any chat.
             Get your chat ID by sending /start to your bot.
@@ -105,7 +95,7 @@ function WorkflowSettingsDialog({ workflow, onClose }: { workflow: Workflow; onC
       {triggerType === 'webhook' && (
         <div className="p-4 bg-gray-50 rounded-lg border text-sm text-gray-600">
           <p className="font-medium mb-1">Webhook endpoint:</p>
-          <code className="bg-gray-100 px-2 py-1 rounded text-xs block">
+          <code className="bg-gray-100 px-2 py-1 rounded text-xs block break-all">
             POST /api/v1/workflows/{workflow.id}/trigger
           </code>
           <p className="mt-2 text-xs text-gray-400">Body: {`{ "prompt": "your task here" }`}</p>
@@ -134,15 +124,15 @@ function WorkflowDetail({ workflowId }: { workflowId: string }) {
     <>
       {showSettings && (
         <Dialog open onOpenChange={() => setShowSettings(false)}>
-          <DialogContent className="max-w-md">
+          <DialogContent className="w-[95vw] max-w-md">
             <DialogHeader><DialogTitle>Workflow Settings — {workflow.name}</DialogTitle></DialogHeader>
             <WorkflowSettingsDialog workflow={workflow} onClose={() => setShowSettings(false)} />
           </DialogContent>
         </Dialog>
       )}
-      <div className="flex items-center justify-between px-4 py-2 border-b bg-gray-50">
-        <div className="flex items-center gap-2 text-sm text-gray-500">
-          <Clock className="h-3.5 w-3.5" />
+      <div className="flex flex-wrap items-center justify-between gap-2 px-4 py-2 border-b bg-gray-50">
+        <div className="flex flex-wrap items-center gap-2 text-sm text-gray-500">
+          <Clock className="h-3.5 w-3.5 shrink-0" />
           <span>Trigger: <span className="font-medium text-gray-700 capitalize">{workflow.trigger_type}</span></span>
           {workflow.trigger_type === 'schedule' && (workflow.trigger_config as any)?.cron && (
             <code className="bg-gray-100 px-1.5 py-0.5 rounded text-xs">{(workflow.trigger_config as any).cron}</code>
@@ -188,13 +178,13 @@ export function WorkflowsPage() {
     const wf = workflows.find(w => w.id === selectedId)
     return (
       <div className="flex flex-col h-screen">
-        <div className="flex items-center gap-3 px-6 py-4 border-b bg-white">
-          <button onClick={() => setSelectedId(null)} className="flex items-center gap-1 text-sm text-gray-500 hover:text-gray-800">
-            <ArrowLeft className="h-4 w-4" /> Workflows
+        <div className="flex items-center gap-2 md:gap-3 px-4 md:px-6 py-3 md:py-4 border-b bg-white">
+          <button onClick={() => setSelectedId(null)} className="flex items-center gap-1 text-sm text-gray-500 hover:text-gray-800 shrink-0">
+            <ArrowLeft className="h-4 w-4" /> <span className="hidden sm:inline">Workflows</span>
           </button>
           <span className="text-gray-300">/</span>
-          <h2 className="font-semibold text-gray-900">{wf?.name || 'Workflow'}</h2>
-          {wf?.template_slug && <span className="px-2 py-0.5 bg-purple-100 text-purple-700 rounded text-xs">Template</span>}
+          <h2 className="font-semibold text-gray-900 truncate">{wf?.name || 'Workflow'}</h2>
+          {wf?.template_slug && <span className="px-2 py-0.5 bg-purple-100 text-purple-700 rounded text-xs shrink-0">Template</span>}
         </div>
         <div className="flex-1 overflow-hidden flex flex-col">
           <WorkflowDetail workflowId={selectedId} />
@@ -204,15 +194,15 @@ export function WorkflowsPage() {
   }
 
   return (
-    <div className="p-8">
-      <div className="flex items-center justify-between mb-8">
+    <div className="p-4 md:p-6 lg:p-8">
+      <div className="flex flex-wrap items-start justify-between gap-3 mb-6 md:mb-8">
         <div>
-          <h1 className="text-3xl font-bold text-gray-900">Workflows</h1>
-          <p className="text-gray-500 mt-1">Build and manage agent collaboration workflows</p>
+          <h1 className="text-2xl md:text-3xl font-bold text-gray-900">Workflows</h1>
+          <p className="text-gray-500 mt-1 text-sm md:text-base">Build and manage agent collaboration workflows</p>
         </div>
-        <div className="flex gap-3">
-          <Link to="/templates"><Button variant="outline">Browse Templates</Button></Link>
-          <Button onClick={() => setShowCreate(true)}><Plus className="h-4 w-4 mr-2" />New Workflow</Button>
+        <div className="flex flex-wrap gap-2 md:gap-3 shrink-0">
+          <Link to="/templates"><Button variant="outline" size="sm" className="md:size-default">Browse Templates</Button></Link>
+          <Button onClick={() => setShowCreate(true)} size="sm" className="md:size-default"><Plus className="h-4 w-4 mr-1 md:mr-2" />New Workflow</Button>
         </div>
       </div>
 
@@ -223,7 +213,7 @@ export function WorkflowsPage() {
           <GitFork className="h-12 w-12 mx-auto mb-4 opacity-50" />
           <h3 className="text-lg font-medium">No workflows yet</h3>
           <p className="text-sm mt-1">Create a workflow or start from a template</p>
-          <div className="flex gap-3 justify-center mt-4">
+          <div className="flex flex-wrap gap-3 justify-center mt-4">
             <Button onClick={() => setShowCreate(true)}>Create Workflow</Button>
             <Link to="/templates"><Button variant="outline">Browse Templates</Button></Link>
           </div>
@@ -231,36 +221,37 @@ export function WorkflowsPage() {
       ) : (
         <div className="space-y-3">
           {workflows.map(wf => (
-            <div key={wf.id} className="flex items-center justify-between p-4 bg-white rounded-xl border hover:border-blue-300 hover:shadow-sm transition-all cursor-pointer group"
+            <div key={wf.id}
+              className="flex items-center justify-between p-3 md:p-4 bg-white rounded-xl border hover:border-blue-300 hover:shadow-sm transition-all cursor-pointer group gap-3"
               onClick={() => setSelectedId(wf.id)}>
-              <div className="flex items-center gap-4">
-                <div className="p-2.5 bg-purple-100 rounded-lg">
-                  <GitFork className="h-5 w-5 text-purple-600" />
+              <div className="flex items-center gap-3 min-w-0">
+                <div className="p-2 md:p-2.5 bg-purple-100 rounded-lg shrink-0">
+                  <GitFork className="h-4 w-4 md:h-5 md:w-5 text-purple-600" />
                 </div>
-                <div>
-                  <div className="flex items-center gap-2">
-                    <h3 className="font-semibold text-gray-900">{wf.name}</h3>
-                    {wf.template_slug && <span className="px-2 py-0.5 bg-purple-100 text-purple-700 rounded text-xs">From template</span>}
-                    <span className={`h-2 w-2 rounded-full ${wf.is_active ? 'bg-green-400' : 'bg-gray-300'}`} />
+                <div className="min-w-0">
+                  <div className="flex flex-wrap items-center gap-1.5 md:gap-2">
+                    <h3 className="font-semibold text-gray-900 truncate">{wf.name}</h3>
+                    {wf.template_slug && <span className="px-2 py-0.5 bg-purple-100 text-purple-700 rounded text-xs shrink-0">From template</span>}
+                    <span className={`h-2 w-2 shrink-0 rounded-full ${wf.is_active ? 'bg-green-400' : 'bg-gray-300'}`} />
                   </div>
-                  <p className="text-sm text-gray-500 flex items-center gap-2">
-                    {wf.description || 'No description'}
-                    <span>•</span>
-                    <span className="capitalize flex items-center gap-1">
+                  <p className="text-xs md:text-sm text-gray-500 flex flex-wrap items-center gap-1 md:gap-2 mt-0.5">
+                    <span className="truncate">{wf.description || 'No description'}</span>
+                    <span className="hidden sm:inline">•</span>
+                    <span className="hidden sm:flex capitalize items-center gap-1">
                       {wf.trigger_type === 'schedule' && <Clock className="h-3 w-3" />}
                       {wf.trigger_type}
                     </span>
                     {wf.trigger_type === 'schedule' && (wf.trigger_config as any)?.cron && (
-                      <code className="bg-gray-100 px-1 py-0.5 rounded text-xs">{(wf.trigger_config as any).cron}</code>
+                      <code className="hidden md:inline bg-gray-100 px-1 py-0.5 rounded text-xs">{(wf.trigger_config as any).cron}</code>
                     )}
                   </p>
                 </div>
               </div>
-              <div className="flex items-center gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
-                <Button variant="ghost" size="icon" onClick={(e) => { e.stopPropagation(); deleteWorkflow.mutate(wf.id) }} className="h-8 w-8 text-red-400 hover:text-red-600">
-                  <Trash2 className="h-4 w-4" />
+              <div className="flex items-center gap-1 md:gap-2 shrink-0 opacity-0 group-hover:opacity-100 transition-opacity">
+                <Button variant="ghost" size="icon" onClick={(e) => { e.stopPropagation(); deleteWorkflow.mutate(wf.id) }} className="h-7 w-7 md:h-8 md:w-8 text-red-400 hover:text-red-600">
+                  <Trash2 className="h-3.5 w-3.5 md:h-4 md:w-4" />
                 </Button>
-                <ChevronRight className="h-5 w-5 text-gray-400" />
+                <ChevronRight className="h-4 w-4 md:h-5 md:w-5 text-gray-400" />
               </div>
             </div>
           ))}
@@ -268,7 +259,7 @@ export function WorkflowsPage() {
       )}
 
       <Dialog open={showCreate} onOpenChange={v => { setShowCreate(v); setCreateError('') }}>
-        <DialogContent className="max-w-md">
+        <DialogContent className="w-[95vw] max-w-md">
           <DialogHeader><DialogTitle>Create New Workflow</DialogTitle></DialogHeader>
           <div className="space-y-4">
             {createError && <div className="bg-red-50 border border-red-200 text-red-700 rounded-lg px-4 py-2 text-sm">{createError}</div>}

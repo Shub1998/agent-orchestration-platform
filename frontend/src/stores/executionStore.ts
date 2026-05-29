@@ -22,10 +22,19 @@ export const useExecutionStore = create<ExecutionStore>((set, get) => ({
   setActiveExecution: (id) => set({ activeExecutionId: id }),
 
   startStream: (executionId) => {
-    get().stopStream()
-    set({ logs: [], status: 'connecting', activeExecutionId: executionId })
+    // Close existing socket without clearing logs (preserve log history across HITL cycles)
+    const existing = get().ws
+    if (existing) {
+      existing.onclose = null
+      existing.close()
+    }
 
-    const wsUrl = `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}/ws/executions/${executionId}/logs`
+    // Keep existing logs if reconnecting for the same execution mid-cycle
+    const keepLogs = get().activeExecutionId === executionId ? get().logs : []
+    set({ logs: keepLogs, status: 'connecting', activeExecutionId: executionId, ws: null })
+
+    const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+    const wsUrl = `${proto}//${window.location.host}/ws/executions/${executionId}/logs`
     const ws = new WebSocket(wsUrl)
 
     ws.onopen = () => set({ status: 'running' })
@@ -39,7 +48,7 @@ export const useExecutionStore = create<ExecutionStore>((set, get) => ({
             logs: [...state.logs, data],
             status: data.status === 'completed' ? 'completed' : 'failed',
           }))
-          ws.close()
+          // Do NOT close the socket — HITL loops may continue and need a new stream
           return
         }
         set(state => ({ logs: [...state.logs, data] }))
@@ -57,7 +66,11 @@ export const useExecutionStore = create<ExecutionStore>((set, get) => ({
 
   stopStream: () => {
     const { ws } = get()
-    if (ws) { ws.close(); set({ ws: null }) }
+    if (ws) {
+      ws.onclose = null
+      ws.close()
+      set({ ws: null })
+    }
   },
 
   addLog: (entry) => set(state => ({ logs: [...state.logs, entry] })),

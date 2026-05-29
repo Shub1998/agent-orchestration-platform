@@ -1,7 +1,7 @@
 import json
-import time
 import os
 from langgraph.graph import StateGraph, END
+from langgraph.types import interrupt
 from app.core.state import AgentFlowState
 from app.core.agent_builder import agent_builder
 from app.core.log_emitter import log_emitter
@@ -24,66 +24,53 @@ def _resolve_target(target_id: str, end_node_ids: set) -> str:
 
 
 def _make_approval_node(node_id: str, label: str, config: dict):
-    """Return a callable that pauses until a human approves/rejects via Redis."""
-    timeout = int((config or {}).get("timeout_seconds", 3600))
+    """
+    Pause the graph and wait for a human decision using LangGraph's native
+    interrupt().  The Celery worker catches GraphInterrupt, persists
+    'awaiting_approval' status, and returns.  A separate resume_workflow_task
+    is dispatched when the human approves/rejects via the API, calling
+    graph.invoke(Command(resume=payload), config=...) to continue from here.
+    """
     description = (config or {}).get("description", "")
 
     def approval_node(state: AgentFlowState) -> dict:
-        import redis as _redis
-        import sqlite3
-
         execution_id = state.get("execution_id", "")
-        redis_key = f"approval:{execution_id}"
-
-        # Mark execution as awaiting approval in DB
-        db_path = "./data/agentflow.db"
-        try:
-            conn = sqlite3.connect(db_path)
-            conn.execute("UPDATE executions SET status='awaiting_approval' WHERE id=?", (execution_id,))
-            conn.commit()
-            conn.close()
-        except Exception:
-            pass
+        current_output = state.get("output", "")
 
         msg = f"⏸ [{label}] Waiting for human approval"
         if description:
             msg += f": {description}"
-        log_emitter.emit(execution_id, "approval", msg,
-                         metadata={"node_id": node_id, "approval_required": True})
+        log_emitter.emit(
+            execution_id, "approval", msg,
+            metadata={"node_id": node_id, "approval_required": True,
+                      "current_output": current_output[:500]},
+        )
 
-        r = _redis.from_url(settings.REDIS_URL, decode_responses=True)
-        deadline = time.time() + timeout
-        while time.time() < deadline:
-            decision = r.get(redis_key)
-            if decision:
-                r.delete(redis_key)
-                comment_key = f"approval_comment:{execution_id}"
-                comment = r.get(comment_key) or ""
-                r.delete(comment_key)
+        # Suspends execution here; resumes when Command(resume=payload) is invoked.
+        payload = interrupt({
+            "node_id": node_id,
+            "label": label,
+            "current_output": current_output[:500],
+        })
 
-                # Restore running status
-                try:
-                    conn = sqlite3.connect(db_path)
-                    conn.execute("UPDATE executions SET status='running' WHERE id=?", (execution_id,))
-                    conn.commit()
-                    conn.close()
-                except Exception:
-                    pass
+        # payload is whatever was passed to Command(resume=...) by resume_workflow_task
+        if isinstance(payload, dict):
+            decision = payload.get("decision", "approved")
+            comment = payload.get("comment", "")
+        else:
+            decision = str(payload)
+            comment = ""
 
-                if decision == "approve":
-                    log_emitter.emit(execution_id, "approval", f"✅ [{label}] Approved — continuing workflow")
-                    ctx = dict(state.get("context") or {})
-                    ctx["approval"] = "approved"
-                    return {"approval_decision": "approved", "rejection_comment": None, "context": ctx}
-                else:
-                    reason = f" Reason: {comment}" if comment else ""
-                    log_emitter.emit(execution_id, "approval",
-                                     f"❌ [{label}] Rejected — routing back for revision.{reason}")
-                    return {"approval_decision": "rejected", "rejection_comment": comment or ""}
-            time.sleep(3)
-
-        log_emitter.emit(execution_id, "approval", f"⏰ [{label}] Approval timed out after {timeout}s")
-        return {"error": f"Approval timed out at step '{label}'"}
+        if decision == "approved":
+            log_emitter.emit(execution_id, "approval", f"✅ [{label}] Approved — continuing to next agent")
+            ctx = dict(state.get("context") or {})
+            ctx["approval"] = "approved"
+            return {"approval_decision": "approved", "rejection_comment": None, "context": ctx}
+        else:
+            reason = f" Reason: {comment}" if comment else ""
+            log_emitter.emit(execution_id, "approval",
+                             f"🔄 [{label}] Rejected — sending back to agent for revision.{reason}")
+            return {"approval_decision": "rejected", "rejection_comment": comment or ""}
 
     return approval_node
 
@@ -192,23 +179,62 @@ class GraphCompiler:
         return builder.compile(checkpointer=checkpointer)
 
     def _make_router(self, outgoing_edges: list[dict], end_node_ids: set):
+        # Separate conditional edges from the optional unconditional default
+        conditional = [e for e in outgoing_edges if e.get("condition")]
+        default_edge = next((e for e in outgoing_edges if not e.get("condition")), None)
+
         def router(state: AgentFlowState) -> str:
             output = state.get("output", "")
-            for edge in outgoing_edges:
-                condition = edge.get("condition")
+            execution_id = state.get("execution_id", "")
+
+            # Try to parse JSON once
+            parsed_json: dict | None = None
+            try:
+                parsed_json = json.loads(output)
+                if not isinstance(parsed_json, dict):
+                    parsed_json = None
+            except (json.JSONDecodeError, Exception):
+                pass
+
+            for edge in conditional:
+                condition = (edge.get("condition") or "").strip().lower()
                 if not condition:
                     continue
-                try:
-                    parsed = json.loads(output)
-                    if isinstance(parsed, dict):
-                        for val in parsed.values():
-                            if condition.lower() in str(val).lower():
-                                return edge["target_node_id"]
-                except (json.JSONDecodeError, Exception):
-                    pass
-                if condition.lower() in output.lower():
+
+                # 1. JSON key match  e.g. {"category": "billing"}
+                if parsed_json:
+                    for k, v in parsed_json.items():
+                        if condition in k.lower() or condition in str(v).lower():
+                            log_emitter.emit(
+                                execution_id, "info",
+                                f"Router: condition '{condition}' matched JSON field '{k}'={v!r}",
+                            )
+                            return edge["target_node_id"]
+
+                # 2. Plain text substring match (case-insensitive)
+                if condition in output.lower():
+                    log_emitter.emit(
+                        execution_id, "info",
+                        f"Router: condition '{condition}' matched in output text",
+                    )
                     return edge["target_node_id"]
-            return outgoing_edges[0]["target_node_id"]
+
+            # 3. Unconditional default edge (drawn without a condition label)
+            if default_edge:
+                log_emitter.emit(
+                    execution_id, "info",
+                    f"Router: no condition matched — taking default edge",
+                )
+                return default_edge["target_node_id"]
+
+            # 4. Hard fallback: first conditional edge with a warning
+            fallback = outgoing_edges[0]["target_node_id"]
+            log_emitter.emit(
+                execution_id, "info",
+                f"Router: no condition matched and no default edge — falling back to '{fallback}'",
+            )
+            return fallback
+
         return router
 
 

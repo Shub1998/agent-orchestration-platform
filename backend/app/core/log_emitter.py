@@ -1,4 +1,5 @@
 import json
+import re
 import uuid
 import sqlite3
 import os
@@ -6,7 +7,9 @@ from datetime import datetime
 import redis as sync_redis
 from app.config import settings
 
-DB_PATH = "./data/agentflow.db"
+
+def _db_path() -> str:
+    return re.sub(r"^sqlite\+aiosqlite:///", "", settings.DATABASE_URL)
 
 
 class LogEmitter:
@@ -21,16 +24,18 @@ class LogEmitter:
         return self._redis
 
     def _persist(self, execution_id: str, level: str, message: str,
-                 agent_id: str, agent_name: str, node_id: str, metadata: dict):
+                 agent_id: str, agent_name: str, node_id: str, metadata: dict,
+                 timestamp: str):
         try:
-            if not os.path.exists(DB_PATH):
+            db_path = _db_path()
+            if not os.path.exists(db_path):
                 return
-            conn = sqlite3.connect(DB_PATH)
+            conn = sqlite3.connect(db_path)
             conn.execute(
                 "INSERT INTO execution_logs (id, execution_id, agent_id, agent_name, node_id, level, message, metadata, timestamp) "
                 "VALUES (?,?,?,?,?,?,?,?,?)",
                 (str(uuid.uuid4()), execution_id, agent_id, agent_name, node_id,
-                 level, message, json.dumps(metadata or {}), datetime.utcnow().isoformat())
+                 level, message, json.dumps(metadata or {}), timestamp)
             )
             conn.commit()
             conn.close()
@@ -47,6 +52,8 @@ class LogEmitter:
         node_id: str = None,
         metadata: dict = None,
     ):
+        # Single timestamp used for both Redis publish and SQLite persist so
+        # the REST-log / WS-log deduplication fingerprint (timestamp|message) matches.
         now = datetime.utcnow().isoformat()
         event = {
             "type": "log",
@@ -64,7 +71,7 @@ class LogEmitter:
             r.publish(f"execution:{execution_id}:logs", json.dumps(event))
         except Exception:
             pass
-        self._persist(execution_id, level, message, agent_id, agent_name, node_id, metadata)
+        self._persist(execution_id, level, message, agent_id, agent_name, node_id, metadata, now)
 
     def emit_completion(self, execution_id: str, status: str, output: str = None, error: str = None):
         event = {

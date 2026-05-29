@@ -53,8 +53,12 @@ export function useApproveExecution() {
     mutationFn: ({ id, decision, comment = '' }: { id: string; decision: 'approve' | 'reject'; comment?: string }) =>
       apiClient.post(`/executions/${id}/approve`, { decision, comment }).then(r => r.data),
     onSuccess: (_data, vars) => {
-      qc.invalidateQueries({ queryKey: executionKeys.detail(vars.id) })
+      // Do NOT invalidate the detail query here — the optimistic update in
+      // handleDecision would be immediately overwritten by a refetch that
+      // returns the stale awaiting_approval status (backend hasn't processed
+      // the decision yet). The useExecution 2s poll handles the update naturally.
       qc.invalidateQueries({ queryKey: ['executions'] })
+      qc.invalidateQueries({ queryKey: executionKeys.logs(vars.id) })
     },
   })
 }
