@@ -216,3 +216,9 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# AgentFlow runtime data
+backend/data/agentflow.db
+backend/data/checkpointer.db
+backend/data/chroma/
+backend/data/chroma_cache/
