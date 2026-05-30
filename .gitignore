@@ -221,6 +221,10 @@ __marimo__/
 
 # AgentFlow runtime data
 backend/data/agentflow.db
+backend/data/agentflow.db-shm
+backend/data/agentflow.db-wal
 backend/data/checkpointer.db
+backend/data/checkpointer.db-shm
+backend/data/checkpointer.db-wal
 backend/data/chroma/
 backend/data/chroma_cache/
