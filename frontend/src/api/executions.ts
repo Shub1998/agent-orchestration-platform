@@ -48,6 +48,17 @@ export function useDeleteExecution() {
   })
 }
 
+export function useDeleteAllExecutions() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (workflowId?: string) => {
+      const params = workflowId ? `?workflow_id=${workflowId}` : ''
+      return apiClient.delete(`/executions${params}`)
+    },
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['executions'] }),
+  })
+}
+
 export function useApproveExecution() {
   const qc = useQueryClient()
   return useMutation({

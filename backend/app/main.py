@@ -4,11 +4,12 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from app.config import settings
 from app.database import init_db
-from app.api.v1 import agents, workflows, executions, templates, health, custom_tools
+from app.api.v1 import agents, workflows, executions, templates, health, custom_tools, settings as settings_router
 from app.api.ws import monitor
 # Import all models so init_db creates their tables
 import app.models.workflow_template  # noqa: F401
 import app.models.custom_tool  # noqa: F401
+import app.models.platform_setting  # noqa: F401
 
 
 @asynccontextmanager
@@ -52,6 +53,7 @@ app.include_router(workflows.router, prefix="/api/v1")
 app.include_router(executions.router, prefix="/api/v1")
 app.include_router(templates.router, prefix="/api/v1")
 app.include_router(custom_tools.router, prefix="/api/v1")
+app.include_router(settings_router.router, prefix="/api/v1")
 app.include_router(monitor.router)
 
 

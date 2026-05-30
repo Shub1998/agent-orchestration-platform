@@ -13,7 +13,7 @@ const navItems = [
 
 export function Sidebar() {
   return (
-    <aside className="w-14 lg:w-60 min-h-screen bg-gray-950 text-white flex flex-col shrink-0 transition-all duration-200">
+    <aside className="w-14 lg:w-60 h-screen bg-gray-950 text-white flex flex-col shrink-0 transition-all duration-200">
       {/* Logo */}
       <div className="flex items-center gap-2 px-3 lg:px-6 py-5 border-b border-gray-800 overflow-hidden">
         <div className="p-1.5 bg-blue-600 rounded-lg shrink-0">

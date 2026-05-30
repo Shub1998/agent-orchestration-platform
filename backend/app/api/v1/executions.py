@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+from sqlalchemy import select, delete
 from app.database import get_db
 from app.models.execution import Execution, ExecutionLog
 from app.schemas.execution import ExecutionResponse, ExecutionLogResponse
@@ -31,6 +31,27 @@ async def get_execution(execution_id: str, db: AsyncSession = Depends(get_db)):
     if not execution:
         raise HTTPException(404, "Execution not found")
     return execution
+
+
+@router.delete("", status_code=204)
+async def delete_all_executions(
+    workflow_id: str = Query(None),
+    db: AsyncSession = Depends(get_db),
+):
+    q = select(Execution)
+    if workflow_id:
+        q = q.where(Execution.workflow_id == workflow_id)
+    result = await db.execute(q)
+    executions = result.scalars().all()
+    for execution in executions:
+        if execution.celery_task_id and execution.status in ("running", "pending", "awaiting_approval"):
+            try:
+                from app.workers.celery_app import celery_app
+                celery_app.control.revoke(execution.celery_task_id, terminate=True)
+            except Exception:
+                pass
+        await db.delete(execution)
+    await db.commit()
 
 
 @router.delete("/{execution_id}", status_code=204)

@@ -1,7 +1,7 @@
 import { useState, useMemo } from 'react'
 import { useParams, Link, useNavigate } from 'react-router-dom'
 import { useQueryClient } from '@tanstack/react-query'
-import { useExecutions, useExecution, useDeleteExecution, useApproveExecution, useExecutionLogs, executionKeys } from '@/api/executions'
+import { useExecutions, useExecution, useDeleteExecution, useDeleteAllExecutions, useApproveExecution, useExecutionLogs, executionKeys } from '@/api/executions'
 import { useExecutionStore } from '@/stores/executionStore'
 import { LogStream } from '@/components/executions/LogStream'
 import { Button } from '@/components/ui/button'
@@ -415,12 +415,18 @@ export function ExecutionsPage() {
   const { id } = useParams()
   const { data: executions = [], isLoading } = useExecutions()
   const deleteExecution = useDeleteExecution()
+  const deleteAll = useDeleteAllExecutions()
 
   const handleDeleteFromList = async (e: React.MouseEvent, execId: string) => {
     e.preventDefault()
     e.stopPropagation()
     if (!confirm('Delete this execution and all its logs?')) return
     deleteExecution.mutate(execId)
+  }
+
+  const handleDeleteAll = async () => {
+    if (!confirm(`Delete all ${executions.length} execution${executions.length !== 1 ? 's' : ''} and their logs? This cannot be undone.`)) return
+    deleteAll.mutate(undefined)
   }
 
   if (id) return <ExecutionDetail id={id} />
@@ -432,6 +438,20 @@ export function ExecutionsPage() {
           <h1 className="text-2xl md:text-3xl font-bold text-gray-900">Executions</h1>
           <p className="text-gray-500 mt-1 text-sm md:text-base">Monitor all workflow runs in real-time</p>
         </div>
+        {executions.length > 0 && (
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={handleDeleteAll}
+            disabled={deleteAll.isPending}
+            className="text-red-600 border-red-200 hover:bg-red-50 shrink-0"
+          >
+            {deleteAll.isPending
+              ? <Loader2 className="h-4 w-4 animate-spin mr-1.5" />
+              : <Trash2 className="h-4 w-4 mr-1.5" />}
+            Delete All
+          </Button>
+        )}
       </div>
 
       {isLoading ? (

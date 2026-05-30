@@ -1,116 +1,241 @@
 # AgentFlow — AI Agent Orchestration Platform
 
-A production-ready platform for creating AI agents, configuring collaborative workflows, and monitoring real-time execution — with Telegram integration and a visual drag-and-drop workflow builder.
+> Build, connect, and monitor AI agents through a visual canvas. Trigger workflows from a browser, Telegram, or REST API. Watch every LLM call, tool execution, and routing decision stream live.
+
+---
+
+## Demo
+
+### End-to-end workflow + Telegram live conversation
+
+<!-- Replace the line below with your actual GIF or video embed once recorded -->
+![AgentFlow Demo](docs/demo.gif)
+
+> *Full walkthrough: agent creation → visual workflow builder → live multi-agent execution (Research + Summarizer Pipeline) → real-time log streaming → Telegram conversation with the bot.*
+
+**What the recording shows:**
+
+| Segment | What you see |
+|---|---|
+| Agent creation | Name, model, tools, memory, guardrails configured in the UI |
+| Workflow builder | React Flow canvas — nodes wired, conditional edges labeled |
+| Live execution | Log stream: LLM calls, tool calls, inter-agent handoff, token cost |
+| Conditional routing | Customer Support Triage — billing input routes to Billing Specialist |
+| Telegram | Live message to bot → execution runs → bot replies in chat |
 
 ---
 
 ## Table of Contents
 
+- [Demo](#demo)
+- [Overview](#overview)
 - [Architecture](#architecture)
+  - [System Diagram](#system-diagram)
+  - [Execution Flow](#execution-flow)
+  - [Data Flow: Real-time Streaming](#data-flow-real-time-streaming)
 - [Why LangGraph?](#why-langgraph)
 - [Tech Stack](#tech-stack)
 - [Quick Start](#quick-start)
+  - [Prerequisites](#prerequisites)
+  - [First-time Setup](#first-time-setup)
+  - [With Telegram Bot](#with-telegram-bot)
+  - [Demo Mode](#demo-mode)
+- [Configuration Reference](#configuration-reference)
 - [Features](#features)
+  - [Visual Workflow Builder](#visual-workflow-builder)
+  - [Agent Management](#agent-management)
+  - [Real-time Execution Monitor](#real-time-execution-monitor)
+  - [Messaging Channels](#messaging-channels)
+  - [Pre-built Templates](#pre-built-templates)
 - [Demo Walkthrough](#demo-walkthrough)
 - [Project Structure](#project-structure)
 - [API Reference](#api-reference)
+- [Extending the Platform](#extending-the-platform)
+  - [Add a Workflow Template](#add-a-workflow-template)
+  - [Add a Messaging Channel](#add-a-messaging-channel)
+  - [Add an Agent Tool](#add-an-agent-tool)
+- [Tradeoffs & Production Notes](#tradeoffs--production-notes)
+
+---
+
+## Overview
+
+AgentFlow is a full-stack AI agent orchestration platform built for a production engineering challenge. It covers the complete lifecycle:
+
+| Capability | What it does |
+|---|---|
+| **Visual Builder** | Drag-and-drop canvas to wire agents together with conditional routing |
+| **LangGraph Runtime** | Compiles the visual graph into a real, executable StateGraph with checkpointing |
+| **Async Task Queue** | Celery workers run LLM chains without blocking the API; Beat handles scheduled triggers |
+| **Live Log Streaming** | Every token, tool call, and routing decision streams to the browser via WebSocket |
+| **Messaging Channels** | Telegram (built-in); Slack and Discord wiring points included |
+| **Memory** | Per-agent ChromaDB vector store persists context across executions |
+| **Guardrails** | Input/output keyword blocking and length limits on every agent node |
 
 ---
 
 ## Architecture
 
-```mermaid
-graph TB
-    subgraph UI["React Frontend (port 3001)"]
-        RF[React Flow Builder]
-        EX[Executions / LogStream]
-        AG[Agent Manager]
-    end
+### System Diagram
 
-    subgraph API["FastAPI Backend (port 8000)"]
-        REST[REST API v1]
-        WS[WebSocket /ws/executions]
-        MW[API-Key Middleware]
-    end
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                        Browser / Client                             │
+│                                                                     │
+│   ┌──────────────────┐  ┌────────────────┐  ┌──────────────────┐   │
+│   │  Workflow Builder │  │ Execution Logs │  │  Agent Manager   │   │
+│   │  (React Flow)     │  │ (WebSocket)    │  │  (CRUD + Test)   │   │
+│   └────────┬─────────┘  └───────┬────────┘  └────────┬─────────┘   │
+└────────────┼───────────────────┼────────────────────┼─────────────┘
+             │ HTTP REST          │ ws://               │ HTTP REST
+             ▼                   ▼                     ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│                      FastAPI  (port 8000)                           │
+│                                                                     │
+│   ┌──────────────┐  ┌─────────────────┐  ┌──────────────────────┐  │
+│   │  REST API v1  │  │ WS /ws/exec/{id}│  │  API-Key Middleware   │  │
+│   │  /agents      │  │  → Redis SUB    │  │  (optional)          │  │
+│   │  /workflows   │  └─────────────────┘  └──────────────────────┘  │
+│   │  /executions  │                                                  │
+│   │  /settings    │                                                  │
+│   └──────┬────────┘                                                 │
+└──────────┼──────────────────────────────────────────────────────────┘
+           │ dispatch task
+           ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│                   Celery Workers  +  Beat Scheduler                 │
+│                                                                     │
+│   run_workflow_task          resume_workflow_task                   │
+│   run_agent_direct_task      check_scheduled_workflows (Beat)       │
+│                              check_approval_timeouts  (Beat)        │
+└──────────────────────────────┬──────────────────────────────────────┘
+                               │ compile + invoke
+                               ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│                      LangGraph Runtime                              │
+│                                                                     │
+│  graph_compiler.py → StateGraph                                     │
+│                                                                     │
+│  ┌──────────────────────────────────────────────────────────────┐   │
+│  │  Each Node (agent_builder.py)                                │   │
+│  │                                                              │   │
+│  │  ① Input Guardrails (keyword block + length check)          │   │
+│  │  ② ChromaDB memory retrieval                                │   │
+│  │  ③ LLM call (OpenAI / Anthropic)  ← tool_calls loop        │   │
+│  │  ④ Tool execution (web_search, calculator, scraper, …)      │   │
+│  │  ⑤ Output Guardrails (keyword block)                        │   │
+│  │  ⑥ Redis PUBLISH (log event)                                │   │
+│  │  ⑦ ChromaDB memory store                                    │   │
+│  └──────────────────────────────────────────────────────────────┘   │
+│                                                                     │
+│  Conditional routing: edge conditions → router agent JSON output    │
+│  HITL nodes: interrupt() → awaiting_approval → resume via API       │
+│  Checkpointing: SqliteSaver persists state per thread_id            │
+└─────────────────────────────────────────────────────────────────────┘
+           │                              │
+           ▼                              ▼
+    ┌─────────────┐               ┌──────────────┐
+    │    Redis    │               │    SQLite    │
+    │  pub/sub    │               │  (app data)  │
+    │  rate limit │               │  checkpoint  │
+    └─────────────┘               └──────────────┘
+           │
+           ▼
+    ┌─────────────────┐
+    │   ChromaDB      │
+    │  (vector store) │
+    └─────────────────┘
 
-    subgraph Workers["Celery Workers"]
-        WT[run_workflow_task]
-        RA[run_agent_direct_task]
-        RW[resume_workflow_task]
-        BS[Beat: check_scheduled_workflows]
-        BT[Beat: check_approval_timeouts]
-    end
-
-    subgraph Runtime["LangGraph Runtime"]
-        GC[graph_compiler.py]
-        AB[agent_builder.py]
-        IG[Input Guardrails]
-        OG[Output Guardrails]
-        MM[memory_manager ChromaDB]
-    end
-
-    subgraph Integrations["Integrations"]
-        TG[Telegram Bot]
-    end
-
-    UI -->|HTTP / WebSocket| API
-    API -->|dispatch task| Workers
-    Workers -->|compile + invoke| Runtime
-    Runtime -->|pub/sub events| REDIS[(Redis)]
-    REDIS -->|subscribe| WS
-    WS -->|stream| UI
-    Workers -->|read/write| DB[(SQLite)]
-    API -->|read/write| DB
-    Runtime -->|vectors| CHROMA[(ChromaDB)]
-    TG -->|message trigger| Workers
-    Workers -->|reply| TG
-    Workers -->|rate limit counter| REDIS
+  ┌────────────────────────┐
+  │  Telegram Bot Service  │  ← separate docker-compose service
+  │  (python-telegram-bot) │  ← polls Telegram API
+  │  message → Celery task │
+  │  result  → bot.reply() │
+  └────────────────────────┘
 ```
 
 ### Execution Flow
 
-1. User triggers workflow via UI **or** Telegram message
-2. FastAPI creates an `Execution` record → dispatches Celery task
-3. Celery worker loads workflow from DB, compiles LangGraph `StateGraph`
-4. Graph executes agents sequentially/conditionally, each node:
-   - **Input guardrails**: checks keywords + length before calling LLM
-   - Retrieves memory from ChromaDB
-   - Calls LLM (with optional JSON response_format for router agents)
-   - Executes tools (web_search, calculator, custom webhooks, etc.)
-   - **Output guardrails**: blocks forbidden keywords in response
-   - Emits log events to Redis pub/sub
-   - Stores output to ChromaDB memory
-5. FastAPI WebSocket subscribes to Redis → streams logs to browser in real-time
-6. On completion: Telegram bot replies to the originating chat
+```
+User / Telegram / REST API
+        │
+        │  POST /workflows/{id}/trigger  {"input": "..."}
+        ▼
+  FastAPI creates Execution record (status=running)
+        │
+        │  celery.delay(run_workflow_task, execution_id)
+        ▼
+  Celery Worker
+        │
+        │  Load Workflow + Agents from SQLite
+        │  graph_compiler.py → compile StateGraph
+        │  asyncio.new_event_loop().run_until_complete(graph.ainvoke(...))
+        ▼
+  LangGraph executes node by node:
 
-### Execution Flow
+    [Start] ──► [Agent A] ──► [Agent B] ──► [End]
+                    │                │
+                  tools           conditional
+                  memory           routing
 
-1. User triggers workflow via UI **or** Telegram message
-2. FastAPI creates an `Execution` record → dispatches Celery task
-3. Celery worker loads workflow from DB, compiles LangGraph `StateGraph`
-4. Graph executes agents sequentially/conditionally, each node:
-   - Retrieves memory from ChromaDB
-   - Calls LLM with tools (web_search, calculator, etc.)
-   - Emits log events to Redis pub/sub
-   - Stores output to ChromaDB memory
-5. FastAPI WebSocket subscribes to Redis → streams logs to browser in real-time
-6. On completion: Telegram bot replies to the originating chat
+        │  Each step: log_emitter.emit(event) → Redis PUBLISH
+        ▼
+  FastAPI WS handler (monitor.py)
+        │
+        │  Redis SUBSCRIBE execution:{id}:logs
+        │  forward each message to the WebSocket client
+        ▼
+  Browser LogStream component renders live
+        │
+  On completion:
+        │  Celery updates Execution status=completed + final_output
+        │  If triggered from Telegram: bot replies to chat
+        ▼
+  Done
+```
+
+### Data Flow: Real-time Streaming
+
+```
+  LangGraph node          Redis            FastAPI WS          Browser
+       │                    │                  │                  │
+       │─ emit("llm_start") ►│                  │                  │
+       │                    │─ PUBLISH ────────►│                  │
+       │                    │                  │─ send_json() ────►│
+       │─ emit("tool_call") ►│                  │                  │
+       │                    │─ PUBLISH ────────►│                  │
+       │                    │                  │─ send_json() ────►│
+       │─ emit("llm_end")   ►│                  │                  │
+       │                    │─ PUBLISH ────────►│                  │
+       │                    │                  │─ send_json() ────►│
+```
 
 ---
 
 ## Why LangGraph?
 
-LangGraph was chosen over CrewAI, AutoGen, and a custom runtime:
+LangGraph was chosen over CrewAI, AutoGen, and a hand-rolled async executor.
 
-| Criterion | LangGraph ✓ | CrewAI | AutoGen |
-|---|---|---|---|
-| **Graph topology** | Arbitrary (cycles, fan-out, conditions) | Fixed crew→task | Conversation chains |
-| **Visual mapping** | 1:1 with React Flow nodes/edges | Hard to serialize | N/A |
-| **Checkpointing** | Built-in SqliteSaver/PostgresSaver | External | External |
-| **Streaming** | Native `astream()` | Limited | Limited |
-| **State management** | TypedDict, persisted per thread | Per-crew | Per-conversation |
+### Decision matrix
 
-LangGraph's graph model means each visual node in React Flow maps directly to a LangGraph node — zero impedance mismatch between the UI and the runtime.
+| Criterion | **LangGraph** ✅ | CrewAI | AutoGen | Custom |
+|---|---|---|---|---|
+| **Graph topology** | Arbitrary DAG + cycles + fan-out + conditionals | Fixed crew→task | Conversation chains | Unlimited |
+| **Visual mapping** | 1:1 with React Flow nodes/edges | Hard to serialize | N/A | Complex |
+| **Checkpointing** | Built-in `SqliteSaver` / `PostgresSaver` | External only | External only | Build it yourself |
+| **Streaming** | Native `astream()` + `astream_events()` | Limited | Limited | Build it yourself |
+| **State management** | Typed `TypedDict`, persisted per `thread_id` | Per-crew memory | Per-conversation | Build it yourself |
+| **HITL (approval)** | Native `interrupt()` + `Command(resume=…)` | Not supported | Not supported | Build it yourself |
+| **Conditional routing** | `add_conditional_edges()` with routing function | Manual | N/A | Build it yourself |
+| **Maturity** | LangChain-backed, production usage | Growing | Microsoft-backed | N/A |
+
+### The core insight
+
+The visual canvas (React Flow) and the execution runtime (LangGraph) share the same mental model: **nodes and edges**. A node in the UI becomes a LangGraph node. A conditional edge in the UI becomes `add_conditional_edges()`. This zero-impedance mapping means:
+
+- `graph_compiler.py` converts a DB `Workflow` → `CompiledStateGraph` in ~80 lines
+- Every visual change a user makes immediately reflects in runtime behaviour
+- No translation layer, no "export to YAML then re-parse" step
 
 ---
 
@@ -118,18 +243,19 @@ LangGraph's graph model means each visual node in React Flow maps directly to a 
 
 | Layer | Technology | Rationale |
 |---|---|---|
-| Agent Runtime | LangGraph 0.2.x + LangChain 0.3.x | Graph execution, streaming, checkpoints |
-| LLM Providers | OpenAI GPT-4o + Anthropic Claude | Per-agent model selection |
-| Backend API | FastAPI + Uvicorn (async) | WebSocket-native, auto OpenAPI docs |
-| Task Queue | Celery 5.x + Redis | Async execution, retries, scheduling |
-| Database | SQLite → PostgreSQL via SQLAlchemy 2.0 | Zero-config local, easy prod upgrade |
-| Vector Memory | ChromaDB embedded | No extra service for local dev |
-| Real-time | WebSockets + Redis pub/sub | Live log streaming |
-| Telegram | python-telegram-bot 21.x (asyncio) | Full async, polling or webhook |
-| Frontend | React 18 + TypeScript + Vite | Fast DX, type safety |
-| Workflow UI | React Flow 11.x | Purpose-built for node-edge graphs |
-| Styling | shadcn/ui + Tailwind CSS | Accessible, composable |
-| Containers | Docker + docker-compose v2 | Single command startup |
+| **Agent Runtime** | LangGraph 0.2 + LangChain 0.3 | Graph execution, streaming, HITL, checkpoints |
+| **LLM Providers** | OpenAI GPT-4o · Anthropic Claude | Per-agent model selection |
+| **Backend API** | FastAPI + Uvicorn | WebSocket-native, async, auto-OpenAPI |
+| **Task Queue** | Celery 5 + Redis | Async execution, retries, Beat scheduling |
+| **Database** | SQLite → PostgreSQL (SQLAlchemy 2.0 async) | Zero-config locally; one env var to upgrade |
+| **Vector Memory** | ChromaDB (embedded) | No extra service for local dev |
+| **Real-time** | WebSockets + Redis pub/sub | Decoupled streaming between worker and browser |
+| **Telegram** | python-telegram-bot 21 (asyncio) | Fully async; polling for dev, webhook-ready |
+| **Frontend** | React 18 + TypeScript + Vite | Type-safe, fast HMR |
+| **Workflow UI** | React Flow 11 | Purpose-built node-edge canvas |
+| **UI Components** | shadcn/ui + Tailwind CSS | Accessible, composable, zero-config dark mode |
+| **State (client)** | TanStack Query + Zustand | Server state + WebSocket store |
+| **Containers** | Docker + Compose v2 | Single-command startup, profile-based optional services |
 
 ---
 
@@ -137,123 +263,233 @@ LangGraph's graph model means each visual node in React Flow maps directly to a 
 
 ### Prerequisites
 
-- Docker & Docker Compose v2
-- An OpenAI API key (`sk-...`)
+| Requirement | Version | Notes |
+|---|---|---|
+| Docker | 24+ | |
+| Docker Compose | v2 (`docker compose`) | Not v1 `docker-compose` |
+| OpenAI API key | — | Required for LLM calls |
+| Anthropic API key | — | Optional; enables Claude models |
+| Telegram Bot Token | — | Optional; enables bot integration |
 
-### Setup (one command)
+### First-time Setup
 
 ```bash
+# 1. Clone
 git clone <repo-url>
 cd agent-orchestration-platform
 
-# Copy and edit environment config
+# 2. Configure
 cp .env.example .env
-# Edit .env — add your OPENAI_API_KEY (required)
-# Optional: ANTHROPIC_API_KEY, TELEGRAM_BOT_TOKEN
+# Open .env and set OPENAI_API_KEY (required)
+# Optionally set ANTHROPIC_API_KEY, TELEGRAM_BOT_TOKEN
 
-# Build and start everything
-make dev
-# Or: docker compose up --build
+# 3. Build and start (first run takes ~2 min to pull images)
+make setup   # builds images
+make dev     # starts all services
 ```
 
-After ~2 minutes:
-- **UI**: http://localhost:3001
-- **API Docs**: http://localhost:8000/docs
-- **Health**: http://localhost:8000/api/v1/health
+Services started by `make dev`:
+
+| Service | Port | Description |
+|---|---|---|
+| `frontend` | 3002 | React UI |
+| `backend` | 8000 | FastAPI + WebSocket server |
+| `worker` | — | Celery worker (4 concurrent slots) |
+| `beat` | — | Celery Beat (scheduled tasks) |
+| `redis` | 6380 | Broker + pub/sub |
+
+**Open the UI:** http://localhost:3002  
+**API Docs (Swagger):** http://localhost:8000/docs  
+**Health check:** http://localhost:8000/api/v1/health
+
+```bash
+# Useful commands
+make logs    # tail all service logs
+make stop    # stop all containers
+make clean   # stop + remove volumes + delete ./backend/data
+```
 
 ### With Telegram Bot
 
 ```bash
 # Add to .env:
-TELEGRAM_BOT_TOKEN=your-bot-token-here
+TELEGRAM_BOT_TOKEN=<your-token-from-BotFather>
 
-# Start with Telegram profile
 make telegram
-# Or: docker compose --profile telegram up
+# Equivalent: docker compose --profile telegram up
 ```
 
-### Demo Mode (seeds templates automatically)
+Then message your bot `/start` to retrieve your chat ID. Configure a workflow with **Trigger type = telegram** in the workflow settings.
+
+### Demo Mode
+
+Seeds two pre-built workflows then opens the UI:
 
 ```bash
 make demo
 ```
 
-This creates the Research Pipeline and Customer Support Triage workflows and opens the UI.
+Creates:
+- **Research + Summarizer Pipeline** — web search → summarise
+- **Customer Support Triage** — classify → route to specialist
 
-### Optional: API Key Authentication
+---
 
-Set `API_KEY=your-secret-key` in `.env` to require an `X-API-Key` header on all API requests. Leave it empty (default) to disable authentication for local development.
+## Configuration Reference
 
-### Optional: Approval Timeout
+All settings live in `.env`. Pydantic-settings validates them at startup.
 
-Set `APPROVAL_TIMEOUT_MINUTES=60` (default) to automatically fail executions stuck in `awaiting_approval` after that interval. The Celery Beat service checks every 5 minutes.
+```bash
+# ── LLM Providers ──────────────────────────────────────────────────
+OPENAI_API_KEY=sk-...             # Required for GPT-4o / GPT-4o-mini
+ANTHROPIC_API_KEY=sk-ant-...      # Optional — enables Claude models
+
+# ── Messaging Channels ─────────────────────────────────────────────
+TELEGRAM_BOT_TOKEN=               # From @BotFather; leave empty to skip
+
+# ── Storage ────────────────────────────────────────────────────────
+# SQLite (default, zero-config)
+DATABASE_URL=sqlite+aiosqlite:///./data/agentflow.db
+
+# PostgreSQL (production) — change this one line, nothing else
+# DATABASE_URL=postgresql+asyncpg://user:pass@host/agentflow
+
+CHECKPOINTER_DB_PATH=./data/checkpointer.db   # LangGraph checkpoint store
+CHROMA_PERSIST_DIR=./data/chroma               # ChromaDB vectors
+
+# ── Redis ──────────────────────────────────────────────────────────
+REDIS_URL=redis://localhost:6379/0
+CELERY_BROKER_URL=redis://localhost:6379/0
+CELERY_RESULT_BACKEND=redis://localhost:6379/1
+
+# ── Security ───────────────────────────────────────────────────────
+API_KEY=                          # Set to require X-API-Key header; empty = open
+
+# ── Behaviour ──────────────────────────────────────────────────────
+APPROVAL_TIMEOUT_MINUTES=60       # Auto-fail HITL nodes after this duration
+TRIGGER_RATE_LIMIT=30             # Max triggers per minute per workflow
+DEBUG=false
+```
+
+**Messaging channel tokens** (Slack, Discord, etc.) are stored in the `platform_settings` database table and can be configured at runtime through **Settings → Messaging Channels** in the UI — no restart required.
 
 ---
 
 ## Features
 
-### Agent Management
-- **Full CRUD**: name, role, system prompt, model (GPT-4o, Claude 3.5, etc.), temperature
-- **Tools**: web_search (DuckDuckGo), web_scraper, calculator, datetime, send_telegram, custom webhooks
-- **Memory**: per-agent ChromaDB vector store, persisted across executions
-- **Guardrails**: output keyword blocking + input keyword blocking + max input/output length limits
-- **Output format**: `text` (default) or `json` — forces structured JSON output, ideal for router agents
-- **Live test**: test any agent inline without running a full workflow
-
 ### Visual Workflow Builder
-- **React Flow canvas**: drag agents onto the canvas, draw edges between them
-- **Conditional routing**: add conditions on edges for intelligent branching
-- **Run inline**: trigger workflow execution from the builder, navigate to live logs
+
+- **Drag-and-drop canvas** — drag agents from the sidebar onto the React Flow canvas
+- **Connect agents** — draw edges; LangGraph nodes and edges are compiled 1:1
+- **Conditional routing** — add a condition string on any edge; a router agent (JSON output mode) determines the branch at runtime
+- **Human-in-the-loop nodes** — add an Approval node; execution pauses until approved or rejected via the UI (backed by LangGraph `interrupt()`)
+- **Run inline** — trigger and navigate to live logs without leaving the builder
+
+### Agent Management
+
+| Setting | Options |
+|---|---|
+| **Model** | `gpt-4o`, `gpt-4o-mini`, `claude-3-5-sonnet`, `claude-3-haiku`, and any model name |
+| **Provider** | `openai`, `anthropic` |
+| **Temperature** | 0.0 – 2.0 |
+| **Max iterations** | Tool call loop limit |
+| **Output format** | `text` (default) or `json` (forces structured output — ideal for router agents) |
+| **Memory** | Per-agent ChromaDB collection, persisted across runs |
+| **Tools** | `web_search`, `web_scraper`, `calculator`, `datetime`, `send_telegram`, custom HTTP webhooks |
+| **Input guardrails** | Block inputs containing specific keywords; enforce max length |
+| **Output guardrails** | Block responses containing specific keywords; enforce max length |
+| **Test** | Run any prompt against the agent inline without a full workflow |
+
+### Real-time Execution Monitor
+
+Every execution streams log events live via WebSocket:
+
+| Event type | Colour | Example |
+|---|---|---|
+| `llm_start` | Blue | `[Research Agent] Calling GPT-4o-mini…` |
+| `tool_call` | Yellow | `[Research Agent] → web_search("AI breakthroughs 2024")` |
+| `tool_result` | Yellow | `[Research Agent] ← 3 results found` |
+| `llm_end` | Green | `[Research Agent] completed in 4.2s` |
+| `routing` | Indigo | `Routing → billing (confidence: 0.94)` |
+| `error` | Red | `[Agent] Output blocked by guardrail: "harmful"` |
+
+Execution history is persisted; past logs are paginated from the database.
+
+### Messaging Channels
+
+Configure tokens at runtime via **Settings → Messaging Channels**:
+
+| Channel | Status | Trigger type |
+|---|---|---|
+| **Telegram** | Built-in | `telegram` |
+| **Slack** | Token wiring included | `slack` |
+| **Discord** | Token wiring included | `discord` |
 
 ### Pre-built Templates
 
-**1. Research + Summarizer Pipeline**
-```
-[Start] → [Research Agent] → [Summarizer Agent] → [End]
-```
-- Researcher uses web_search + web_scraper to gather information
-- Summarizer synthesizes findings into an executive summary
+**Research + Summarizer Pipeline**
 
-**2. Customer Support Triage**
 ```
-[Start] → [Triage Agent] ──billing──→ [Billing Specialist] → [End]
-                          ──technical→ [Tech Support]       → [End]
-                          ──general──→ [General Support]    → [End]
+[Start] ──► [Research Agent] ──► [Summarizer Agent] ──► [End]
+                  │
+            tools: web_search
+                   web_scraper
 ```
-- Triage classifies the issue via JSON output
-- LangGraph conditional routing sends to the right specialist
 
-### Real-time Monitoring
-- **WebSocket log stream**: live events per agent (LLM start/end, tool calls, errors)
-- **Color-coded levels**: blue=LLM, yellow=tools, green=completed, red=errors
-- **Execution history**: full log of all past runs with final output
+The Research agent searches and scrapes sources; the Summarizer synthesises findings into an executive summary. Both store their outputs in per-agent memory.
 
-### Telegram Integration
-- Any message to the bot triggers the configured workflow
-- `/start` returns your chat ID for configuration
-- Final workflow output is automatically delivered to the chat
+**Customer Support Triage**
+
+```
+                         ┌──billing──► [Billing Specialist] ──► [End]
+[Start] ──► [Triage] ────┤
+                         ├──technical► [Tech Support]       ──► [End]
+                         │
+                         └──general──► [General Support]    ──► [End]
+```
+
+Triage uses JSON output mode to classify the issue. `graph_compiler.py` wires `add_conditional_edges()` automatically from the edge condition strings — no code change needed when re-routing.
 
 ---
 
 ## Demo Walkthrough
 
-1. **Open** http://localhost:3001
+```bash
+make demo
+# Opens http://localhost:3002
+```
 
-2. **Create template**: Templates → "Use Template" on "Research + Summarizer"
+**Step 1 — Research a topic**
 
-3. **Open workflow**: Workflows → "Research + Summarizer Pipeline"
-   - See: Start → Research Agent → Summarizer Agent → End
+1. Go to **Workflows** → open "Research + Summarizer Pipeline"
+2. Click **Run Workflow** → enter:
+   ```
+   What are the top 5 AI breakthroughs of 2024?
+   ```
+3. Watch the Executions tab: Research Agent calls `web_search`, `web_scraper`, then passes findings to Summarizer Agent
 
-4. **Run workflow**: Click "Run Workflow" → enter:
-   > `What are the top 5 AI breakthroughs of 2024?`
+**Step 2 — Conditional routing**
 
-5. **Watch live**: See Research Agent call web_search and web_scraper tools in real-time, then Summarizer Agent produce an executive summary
+1. Go to **Workflows** → open "Customer Support Triage"
+2. Click **Run Workflow** → enter:
+   ```
+   My invoice shows an incorrect charge from last month
+   ```
+3. Watch Triage Agent output `{"route": "billing"}` → graph routes to Billing Specialist
 
-6. **Telegram**: Message your bot the same question — get the researched reply in ~30-60s
+**Step 3 — Telegram** *(if token configured)*
 
-7. **Customer Support**: Use "Customer Support Triage" template → trigger with:
-   > `My invoice shows an incorrect charge`
-   Watch: Triage → "billing" → Billing Specialist responds
+Message your bot:
+```
+What are the top 5 AI breakthroughs of 2024?
+```
+The same workflow runs and replies in ~30–60 s.
+
+**Step 4 — Build your own**
+
+1. **Agents** → Create new agent (give it a system prompt and tools)
+2. **Workflows** → Create new → drag your agent onto the canvas → connect Start → Agent → End
+3. **Run Workflow** — live logs appear immediately
 
 ---
 
@@ -261,97 +497,210 @@ Set `APPROVAL_TIMEOUT_MINUTES=60` (default) to automatically fail executions stu
 
 ```
 agent-orchestration-platform/
-├── docker-compose.yml           # All 6 services
-├── .env.example                 # All config variables documented
-├── Makefile                     # setup / dev / demo / stop
+├── Makefile                          # setup / dev / demo / telegram / stop / clean / logs
+├── docker-compose.yml                # 6 services (redis, backend, worker, beat, telegram_bot, frontend)
+├── .env.example                      # All config vars with documentation
 │
 ├── backend/
 │   └── app/
-│       ├── main.py              # FastAPI app + lifespan
-│       ├── config.py            # Pydantic Settings
-│       ├── models/              # ORM: Agent, Workflow, Execution, etc.
-│       ├── api/v1/              # REST routers
-│       ├── api/ws/monitor.py    # WebSocket log streaming
+│       ├── main.py                   # FastAPI app, lifespan (init_db), CORS, auth middleware
+│       ├── config.py                 # Pydantic BaseSettings — reads from .env
+│       ├── database.py               # SQLAlchemy async engine + session factory
+│       ├── dependencies.py           # FastAPI Depends helpers
+│       │
+│       ├── models/                   # SQLAlchemy ORM models
+│       │   ├── agent.py              # Agent (tools, guardrails, memory, telegram config)
+│       │   ├── workflow.py           # Workflow + WorkflowNode + WorkflowEdge
+│       │   ├── execution.py          # Execution + ExecutionLog
+│       │   ├── message.py            # Chat message history
+│       │   ├── memory.py             # ChromaDB collection metadata
+│       │   ├── custom_tool.py        # User-defined HTTP webhook tools
+│       │   ├── workflow_template.py  # Template registry
+│       │   └── platform_setting.py   # Key-value store for channel tokens
+│       │
+│       ├── schemas/                  # Pydantic request/response models
+│       │
+│       ├── api/
+│       │   ├── v1/
+│       │   │   ├── agents.py         # CRUD + test + memory endpoints
+│       │   │   ├── workflows.py      # CRUD + graph save + trigger + scheduling
+│       │   │   ├── executions.py     # List + logs + approve/reject HITL
+│       │   │   ├── templates.py      # Gallery + instantiate
+│       │   │   ├── custom_tools.py   # User webhook tool CRUD
+│       │   │   ├── settings.py       # Platform settings (channel tokens) GET/PUT/DELETE
+│       │   │   └── health.py         # Health check + tool list
+│       │   └── ws/
+│       │       └── monitor.py        # WebSocket endpoint → Redis SUBSCRIBE → stream logs
+│       │
 │       ├── core/
-│       │   ├── state.py         # LangGraph AgentFlowState TypedDict
-│       │   ├── agent_builder.py # DB Agent → LangGraph callable
-│       │   ├── graph_compiler.py# DB Workflow → CompiledStateGraph
-│       │   ├── log_emitter.py   # Redis pub/sub events
-│       │   └── memory_manager.py# ChromaDB per-agent memory
-│       ├── tools/               # web_search, calculator, scraper, telegram
-│       ├── workers/             # Celery tasks
-│       ├── integrations/telegram/ # Bot + handlers
-│       └── templates/           # research_pipeline, customer_support
+│       │   ├── state.py              # AgentFlowState TypedDict (shared graph state)
+│       │   ├── agent_builder.py      # DB Agent → async LangGraph callable (tools + memory wired)
+│       │   ├── graph_compiler.py     # DB Workflow → CompiledStateGraph (nodes + edges + conditions)
+│       │   ├── log_emitter.py        # Redis PUBLISH helper used by every agent node
+│       │   ├── memory_manager.py     # ChromaDB retrieval + storage per agent collection
+│       │   └── cost_calculator.py    # Token usage → USD cost estimate
+│       │
+│       ├── tools/                    # LangChain @tool functions
+│       │   ├── web_search.py         # DuckDuckGo search
+│       │   ├── web_scraper.py        # URL → clean text (httpx + BeautifulSoup)
+│       │   ├── calculator.py         # Safe math expression evaluator
+│       │   ├── datetime_tool.py      # Current date/time in any timezone
+│       │   ├── http_request.py       # Generic HTTP webhook tool
+│       │   ├── send_telegram.py      # Send message to Telegram chat mid-execution
+│       │   └── text_tools.py         # Summarise, extract, transform
+│       │
+│       ├── workers/
+│       │   ├── celery_app.py         # Celery app + config
+│       │   ├── execution_tasks.py    # run_workflow_task / run_agent_direct_task / resume_workflow_task
+│       │   └── scheduled_tasks.py    # check_scheduled_workflows / check_approval_timeouts (Beat)
+│       │
+│       ├── integrations/
+│       │   └── telegram/
+│       │       ├── bot.py            # ApplicationBuilder + polling loop (standalone process)
+│       │       ├── handlers.py       # /start /help /agents + plain message → Celery task
+│       │       └── router.py         # chat_id ↔ workflow_id mapping
+│       │
+│       └── templates/
+│           ├── research_pipeline.py  # Research + Summarizer template factory
+│           ├── customer_support.py   # Triage + three specialist agents template
+│           └── …                     # Add new templates here
 │
 └── frontend/
     └── src/
-        ├── api/                 # Axios + TanStack Query hooks
-        ├── stores/              # Zustand execution store (WebSocket)
+        ├── api/
+        │   ├── client.ts             # Axios instance (base URL, auth header)
+        │   ├── agents.ts             # Agent CRUD + test + memory hooks
+        │   ├── workflows.ts          # Workflow CRUD + trigger
+        │   ├── executions.ts         # Execution list + logs
+        │   ├── templates.ts          # Template gallery + instantiate
+        │   ├── custom_tools.ts       # Webhook tool CRUD
+        │   ├── settings.ts           # Platform settings (channel tokens)
+        │   └── types.ts              # Shared TypeScript types
+        │
+        ├── stores/
+        │   └── executionStore.ts     # Zustand: WebSocket connection + live log buffer
+        │
         ├── components/
-        │   ├── workflows/       # WorkflowBuilder (React Flow) + AgentNode
-        │   └── executions/      # LogStream (WebSocket terminal)
-        └── pages/               # Dashboard, Agents, Workflows, Executions
+        │   ├── layout/
+        │   │   ├── Layout.tsx        # h-screen fixed sidebar + scrollable main
+        │   │   └── Sidebar.tsx       # Nav items + Settings link
+        │   ├── workflows/
+        │   │   ├── WorkflowBuilder.tsx # React Flow canvas + node toolbar
+        │   │   └── AgentNode.tsx     # Custom node component (agent card)
+        │   ├── executions/
+        │   │   └── LogStream.tsx     # Live WebSocket log terminal
+        │   └── ui/                   # shadcn/ui primitives
+        │
+        └── pages/
+            ├── DashboardPage.tsx     # Stats + recent executions
+            ├── AgentsPage.tsx        # Agent list + create/edit dialog
+            ├── WorkflowsPage.tsx     # Workflow list + settings drawer
+            ├── ExecutionsPage.tsx    # Execution history + log viewer
+            ├── TemplatesPage.tsx     # Template gallery
+            ├── ToolsPage.tsx         # Custom HTTP webhook tools
+            └── SettingsPage.tsx      # System status + messaging channel config
 ```
 
 ---
 
 ## API Reference
 
-Base URL: `http://localhost:8000/api/v1`
+**Base URL:** `http://localhost:8000/api/v1`  
+**Auth:** Set `X-API-Key: <your-key>` header when `API_KEY` is configured in `.env`  
+**Interactive docs:** http://localhost:8000/docs
+
+### Agents
 
 | Method | Endpoint | Description |
 |---|---|---|
-| GET | `/health` | System health check |
-| GET | `/tools` | List available agent tools |
-| GET/POST | `/agents` | List/create agents |
-| GET/PATCH/DELETE | `/agents/{id}` | Get/update/delete agent |
-| POST | `/agents/{id}/test` | Test agent with a prompt |
-| GET/DELETE | `/agents/{id}/memory` | View/clear agent memory |
-| GET/POST | `/workflows` | List/create workflows |
-| POST | `/workflows/{id}/graph` | Save visual graph (nodes+edges) |
-| POST | `/workflows/{id}/trigger` | Start workflow execution |
-| GET | `/executions` | List all executions |
-| GET | `/executions/{id}/logs` | Paginated execution logs |
-| GET | `/templates` | List workflow templates |
-| POST | `/templates/{slug}/instantiate` | Create workflow from template |
-| WS | `/ws/executions/{id}/logs` | Real-time log streaming |
+| `GET` | `/agents` | List all agents |
+| `POST` | `/agents` | Create agent |
+| `GET` | `/agents/{id}` | Get agent |
+| `PATCH` | `/agents/{id}` | Update agent |
+| `DELETE` | `/agents/{id}` | Delete agent |
+| `POST` | `/agents/{id}/test` | Test agent with `{"input": "..."}` |
+| `GET` | `/agents/{id}/memory` | View stored memory |
+| `DELETE` | `/agents/{id}/memory` | Clear agent memory |
+
+### Workflows
+
+| Method | Endpoint | Description |
+|---|---|---|
+| `GET` | `/workflows` | List all workflows |
+| `POST` | `/workflows` | Create workflow |
+| `GET` | `/workflows/{id}` | Get workflow with nodes + edges |
+| `PATCH` | `/workflows/{id}` | Update metadata |
+| `DELETE` | `/workflows/{id}` | Delete workflow |
+| `POST` | `/workflows/{id}/graph` | Save visual graph `{nodes, edges}` |
+| `POST` | `/workflows/{id}/trigger` | Start execution `{"input": "..."}` |
+
+### Executions
+
+| Method | Endpoint | Description |
+|---|---|---|
+| `GET` | `/executions` | List executions (filterable by workflow) |
+| `GET` | `/executions/{id}` | Get execution detail |
+| `GET` | `/executions/{id}/logs` | Paginated log entries |
+| `POST` | `/executions/{id}/approve` | Approve HITL node |
+| `POST` | `/executions/{id}/reject` | Reject HITL node |
+| `WS` | `/ws/executions/{id}/logs` | Real-time log stream |
+
+### Templates & Tools
+
+| Method | Endpoint | Description |
+|---|---|---|
+| `GET` | `/templates` | List available templates |
+| `POST` | `/templates/{slug}/instantiate` | Create workflow from template |
+| `GET` | `/tools` | List all available tools (built-in + custom) |
+| `GET/POST` | `/custom-tools` | List / create webhook tool |
+| `PATCH/DELETE` | `/custom-tools/{id}` | Update / delete webhook tool |
+
+### Settings
+
+| Method | Endpoint | Description |
+|---|---|---|
+| `GET` | `/settings` | All saved settings (secrets masked) |
+| `PUT` | `/settings/{key}` | Save or update a setting `{"value": "..."}` |
+| `DELETE` | `/settings/{key}` | Clear a setting |
 
 ---
 
-## Running Tests
+## Extending the Platform
 
-```bash
-# From the backend directory (or inside the backend container)
-cd backend
-pip install -r requirements.txt
-pytest
+### Add a Workflow Template
 
-# With coverage
-pytest --tb=short -v
-```
-
-Tests cover: agent CRUD, workflow CRUD + graph saving, template instantiation, graph compiler (linear + conditional routing), guardrail keyword blocking, and cost calculator.
-
----
-
-## How to Add a New Workflow Template
-
-1. Create `backend/app/templates/my_template.py` with an `async def create_my_template(db)` function:
+1. Create `backend/app/templates/my_template.py`:
 
 ```python
+from sqlalchemy.ext.asyncio import AsyncSession
+from app.models.agent import Agent
+from app.models.workflow import Workflow, WorkflowNode, WorkflowEdge
+
 async def create_my_template(db: AsyncSession) -> dict:
-    # 1. Create Agent ORM objects and db.add() them
-    # 2. Create a Workflow + WorkflowNode + WorkflowEdge objects
-    # 3. await db.commit()
-    return {"workflow_id": ..., "agents": [...], "message": "Created"}
+    # 1. Create agents
+    agent = Agent(name="My Agent", system_prompt="You are …", model="gpt-4o-mini", ...)
+    db.add(agent)
+    await db.flush()
+
+    # 2. Create workflow
+    workflow = Workflow(name="My Workflow", ...)
+    db.add(workflow)
+    await db.flush()
+
+    # 3. Add nodes and edges
+    db.add(WorkflowNode(workflow_id=workflow.id, agent_id=agent.id, node_type="agent", ...))
+    db.add(WorkflowEdge(workflow_id=workflow.id, source_id="start", target_id=agent.id))
+    await db.commit()
+    return {"workflow_id": workflow.id, "message": "Created"}
 ```
 
-2. Register it in `backend/app/api/v1/templates.py`:
+2. Register in `backend/app/api/v1/templates.py`:
 
 ```python
 TEMPLATES["my-template"] = {
-    "slug": "my-template", "name": "My Template",
-    "description": "...", "icon": "zap", "category": "productivity", "agent_count": 2,
+    "slug": "my-template", "name": "My Workflow",
+    "description": "What it does.", "icon": "zap",
+    "category": "productivity", "agent_count": 1,
 }
 
 # In instantiate_template():
@@ -360,47 +709,165 @@ elif slug == "my-template":
     result = await create_my_template(db)
 ```
 
-That's it — it appears in the Templates gallery automatically.
+The template appears in the gallery automatically — no other changes needed.
 
----
+### Add a Messaging Channel
 
-## How to Add a New Messaging Channel
+Pattern demonstrated by Telegram. All channel tokens are stored in `platform_settings` and configurable via Settings UI.
 
-### Pattern (demonstrated by Telegram)
+**Step 1 — Add the UI card** (frontend only)
 
-1. **Create the integration module** at `backend/app/integrations/<channel>/`:
-   - `bot.py` — connection/polling loop (runs as its own process)
-   - `handlers.py` — receives incoming messages, calls `create_execution()` + dispatches Celery task
-   - `router.py` — maps channel user/chat IDs → workflow IDs
+In `frontend/src/pages/SettingsPage.tsx`, append to the `CHANNELS` array:
 
-2. **Add a docker-compose service**:
-```yaml
-my_channel_bot:
-  build: ./backend
-  command: python -m app.integrations.my_channel.bot
-  environment: *backend-env
-  profiles: ["my-channel"]
+```typescript
+{
+  id: 'slack',
+  label: 'Slack',
+  icon: Hash,
+  color: 'green',
+  description: 'Post agent outputs to Slack channels.',
+  fields: [
+    { key: 'slack_bot_token',      label: 'Bot Token',      placeholder: 'xoxb-…', secret: true },
+    { key: 'slack_signing_secret', label: 'Signing Secret', placeholder: 'a1b2…',  secret: true },
+  ],
+  instructions: [
+    'Go to api.slack.com/apps → create a new app.',
+    'OAuth & Permissions → add bot scope chat:write → install to workspace.',
+    'Copy Bot Token + Signing Secret → paste above → Save.',
+    'Add the Slack integration handler to the backend.',
+    'Set trigger type = slack on any workflow.',
+  ],
+}
 ```
 
-3. **Add an agent tool** `backend/app/tools/send_my_channel.py` so agents can reply mid-flow.
+The token card and instructions appear in the UI immediately.
 
-4. **Register the tool** in `backend/app/core/tool_registry.py`.
+**Step 2 — Backend integration**
 
-5. **Add the trigger type** (`my-channel`) to the workflow settings dropdown in `WorkflowsPage.tsx`.
+```
+backend/app/integrations/slack/
+├── bot.py        # socket mode / polling loop (separate docker-compose service)
+├── handlers.py   # receive message → create Execution → celery.delay(run_workflow_task)
+└── router.py     # slack_channel_id ↔ workflow_id
+```
 
-### Example: Slack
-- Use `slack_bolt` library with Socket Mode (no public URL needed for local dev)
-- `handlers.py` listens for `message` events, extracts `channel` + `text`, routes via `router.py`
-- Reply via `app.client.chat_postMessage(channel=..., text=output)`
+Read the token from the database at startup:
+
+```python
+from sqlalchemy import select
+from app.models.platform_setting import PlatformSetting
+
+result = await db.execute(select(PlatformSetting).where(PlatformSetting.key == "slack_bot_token"))
+token = result.scalar_one_or_none()
+```
+
+**Step 3 — Add a send tool** (optional — lets agents push mid-flow messages)
+
+```python
+# backend/app/tools/send_slack.py
+@tool
+def send_slack_message(channel: str, message: str) -> str:
+    """Send a message to a Slack channel."""
+    ...
+```
+
+Register in `backend/app/core/tool_registry.py`.
+
+**Step 4 — Docker Compose service**
+
+```yaml
+slack_bot:
+  build: ./backend
+  command: python -m app.integrations.slack.bot
+  environment: *backend-env
+  volumes: *backend-volumes
+  depends_on:
+    backend:
+      condition: service_healthy
+  profiles: ["slack"]
+```
+
+Start with: `docker compose --profile slack up`
+
+### Add an Agent Tool
+
+1. Create `backend/app/tools/my_tool.py`:
+
+```python
+from langchain.tools import tool
+
+@tool
+def my_tool(query: str) -> str:
+    """One-line description shown to the LLM when deciding to use this tool."""
+    # implementation
+    return result
+```
+
+2. Register in `backend/app/core/tool_registry.py`:
+
+```python
+from app.tools.my_tool import my_tool
+
+TOOL_REGISTRY = {
+    …
+    "my_tool": my_tool,
+}
+```
+
+The tool is immediately available in the Agent editor tool selector.
 
 ---
 
-## Tradeoffs
+## Engineering Decisions
 
-**SQLite → PostgreSQL**: Change `DATABASE_URL` in `.env` — SQLAlchemy abstracts it completely.
+Each decision below was made deliberately for this context. The upgrade path for each is isolated and documented — the architecture is designed so that no single swap ripples across the codebase.
 
-**Celery + asyncio**: Each Celery task opens a new event loop. This adds ~10ms overhead but gives retry logic, dead-letter queues, and scheduled execution (Celery Beat) for free. The alternative (FastAPI BackgroundTasks) cannot be monitored, retried, or scheduled.
+### Database: SQLite with a one-line PostgreSQL upgrade
 
-**ChromaDB embedded**: No separate service. Swap to Qdrant/Pinecone in production by replacing `memory_manager.py` — it's the only consumer.
+**Decision:** SQLite for local development via `sqlite+aiosqlite`.  
+**Why:** Zero-config startup — no database service to provision, no credentials to manage, no migration to run before `make dev` works. This removes an entire class of "works on my machine" friction.  
+**Production upgrade:** One environment variable:
 
-**Telegram as separate process**: Avoids signal handler conflicts with Uvicorn. Both share the same DB and Redis via Celery tasks.
+```bash
+DATABASE_URL=postgresql+asyncpg://user:pass@host/agentflow
+```
+
+SQLAlchemy 2.0 async abstracts the driver completely. The LangGraph checkpointer has a drop-in `AsyncPostgresSaver` that activates in the same `_get_checkpointer()` function in `graph_compiler.py`. No application code changes.
+
+### Task Queue: Celery over FastAPI BackgroundTasks
+
+**Decision:** Celery 5 + Redis as the execution backbone, not FastAPI `BackgroundTasks`.  
+**Why:** LLM workflow executions are long-running (10–120 s), stateful, and must survive API server restarts. Celery gives this for free:
+
+- **Retries** with exponential backoff — transient LLM API failures recover automatically
+- **Persistence** — in-flight tasks survive a worker restart via Redis
+- **Scheduling** — Celery Beat runs `check_scheduled_workflows` and `check_approval_timeouts` without an external cron service
+- **Observability** — every task has a result backend entry; `make logs` shows exactly what each worker is processing
+- **Horizontal scale** — add workers with `docker compose scale worker=4`, no code change
+
+`BackgroundTasks` provides none of these. The ~10 ms event-loop bridge cost (`asyncio.new_event_loop()`) is the only tradeoff — negligible against LLM latencies of seconds.
+
+### Vector Memory: ChromaDB with a single-file swap path
+
+**Decision:** ChromaDB running embedded (in-process, no extra service).  
+**Why:** Eliminates a service dependency during development and evaluation. ChromaDB persists to disk (`./data/chroma`) so memory survives container restarts without any infrastructure.  
+**Production upgrade:** `memory_manager.py` is the single file that touches the vector store. Replacing the ChromaDB client with Qdrant, Pinecone, or Weaviate is fully contained there — nothing else in the codebase references the vector store directly.
+
+### Telegram: Isolated process, not embedded in the API
+
+**Decision:** Telegram bot runs as a separate docker-compose service (`python -m app.integrations.telegram.bot`), not as a background thread inside Uvicorn.  
+**Why:** `python-telegram-bot` manages its own asyncio event loop and signal handlers. Running it inside a Uvicorn process causes signal conflicts that silently drop messages under load. The separate process model means:
+
+- The bot can restart independently without taking down the API
+- Both processes share state through the database and Celery tasks — no direct coupling
+- Adding another channel (Slack, Discord) follows the same pattern: one new service, no API changes
+
+### Rate Limiting: Redis sliding window, configurable per deployment
+
+**Decision:** Enforce `TRIGGER_RATE_LIMIT` (default: 30 triggers/minute/workflow) via a Redis counter.  
+**Why:** Prevents runaway automations from exhausting LLM API quotas. Redis makes the counter shared across all worker instances, so the limit holds even under horizontal scaling. Set to `0` to disable for trusted internal deployments.
+
+### Authentication: Opt-in API key, designed for layered security
+
+**Decision:** `API_KEY` is empty by default; authentication is a single env var away.  
+**Why:** A challenge evaluation environment should not require secret management setup to run `make dev`. When set, every request passes through the auth middleware before reaching any router. The next layer — per-user JWT / OAuth2 — is a standard FastAPI `Depends()` pattern that can be added without touching any existing route logic.
