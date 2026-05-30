@@ -1,14 +1,15 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { useWorkflows, useWorkflow, useCreateWorkflow, useUpdateWorkflow, useDeleteWorkflow } from '@/api/workflows'
+import { useTemplates, useInstantiateTemplate } from '@/api/templates'
 import { WorkflowBuilder } from '@/components/workflows/WorkflowBuilder'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
-import { GitFork, Plus, Trash2, ChevronRight, Loader2, ArrowLeft, Settings, Clock } from 'lucide-react'
-import { Link } from 'react-router-dom'
-import type { Workflow } from '@/api/types'
+import { GitFork, Plus, Trash2, ChevronRight, Loader2, ArrowLeft, Settings, Clock, Info, MousePointer2, Share2, Bot, CheckCircle2, PlayCircle, LayoutTemplate, Search, Zap } from 'lucide-react'
+import { Link, useLocation } from 'react-router-dom'
+import type { Workflow, Template } from '@/api/types'
 
 const CRON_PRESETS = [
   { label: 'Every hour', value: '0 * * * *' },
@@ -116,6 +117,7 @@ function WorkflowSettingsDialog({ workflow, onClose }: { workflow: Workflow; onC
 function WorkflowDetail({ workflowId }: { workflowId: string }) {
   const { data: workflow, isLoading } = useWorkflow(workflowId)
   const [showSettings, setShowSettings] = useState(false)
+  const [showBuilderInfo, setShowBuilderInfo] = useState(false)
 
   if (isLoading) return <div className="flex justify-center py-20"><Loader2 className="h-8 w-8 animate-spin text-gray-400" /></div>
   if (!workflow) return <div className="p-8 text-gray-400">Workflow not found</div>
@@ -130,6 +132,104 @@ function WorkflowDetail({ workflowId }: { workflowId: string }) {
           </DialogContent>
         </Dialog>
       )}
+
+      {/* Builder instructions dialog */}
+      <Dialog open={showBuilderInfo} onOpenChange={setShowBuilderInfo}>
+        <DialogContent className="max-w-lg max-h-[90vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Share2 className="h-5 w-5 text-purple-500" />
+              How to Build a Workflow
+            </DialogTitle>
+          </DialogHeader>
+          <div className="py-2 space-y-5">
+            <p className="text-sm text-gray-500">
+              The canvas is a visual flow editor. Nodes represent steps; edges are the connections between them. Drag, drop, and connect to design your agent pipeline.
+            </p>
+            <ol className="space-y-4">
+              {[
+                {
+                  icon: Bot,
+                  color: 'bg-blue-100 text-blue-600',
+                  title: 'Create agents first',
+                  body: 'Go to the Agents page and create the AI agents you want to use. Each agent has its own model, system prompt, and tools. Come back here once they\'re ready.',
+                },
+                {
+                  icon: MousePointer2,
+                  color: 'bg-purple-100 text-purple-600',
+                  title: 'Drag agents onto the canvas',
+                  body: 'Open the left panel (or right-click the canvas) and drag an Agent node onto the canvas. The node will show the agent\'s name. You can also add Approval nodes for human-in-the-loop gates.',
+                },
+                {
+                  icon: Share2,
+                  color: 'bg-green-100 text-green-600',
+                  title: 'Connect the nodes',
+                  body: 'Hover the edge of any node to reveal a connection handle (circle). Drag from that handle to another node to create an edge. The flow always starts at Start and ends at End.',
+                },
+                {
+                  icon: CheckCircle2,
+                  color: 'bg-orange-100 text-orange-600',
+                  title: 'Save your layout',
+                  body: 'Click the Save button in the canvas toolbar after each change. Unsaved changes are lost on navigation.',
+                },
+                {
+                  icon: PlayCircle,
+                  color: 'bg-teal-100 text-teal-600',
+                  title: 'Run the workflow',
+                  body: 'Use the Run button at the top of the canvas or go to the Executions page. Enter a prompt as the starting input and watch the agents collaborate in real-time.',
+                },
+              ].map((step, i) => {
+                const StepIcon = step.icon
+                return (
+                  <li key={i} className="flex gap-3">
+                    <div className={`mt-0.5 shrink-0 w-8 h-8 rounded-full flex items-center justify-center ${step.color}`}>
+                      <StepIcon className="h-4 w-4" />
+                    </div>
+                    <div>
+                      <p className="text-sm font-semibold text-gray-800">
+                        <span className="text-gray-400 mr-1.5">{i + 1}.</span>{step.title}
+                      </p>
+                      <p className="text-sm text-gray-500 mt-0.5">{step.body}</p>
+                    </div>
+                  </li>
+                )
+              })}
+            </ol>
+            <div className="rounded-lg bg-purple-50 border border-purple-100 px-4 py-3 text-sm text-purple-700 space-y-2">
+              <p className="font-semibold">Node types:</p>
+              <ul className="space-y-2 text-purple-700">
+                <li className="flex gap-2">
+                  <span className="shrink-0">▶</span>
+                  <span><strong>Start</strong> — entry point that receives the initial prompt and passes it into the pipeline.</span>
+                </li>
+                <li className="flex gap-2">
+                  <span className="shrink-0">🤖</span>
+                  <span><strong>Agent</strong> — runs an AI agent. Its output becomes the input for the next node.</span>
+                </li>
+                <li className="flex gap-2">
+                  <span className="shrink-0">🔀</span>
+                  <div>
+                    <span><strong>Router</strong> — branches the flow based on the content of the previous output. Add a Router node, then draw multiple edges out of it. Click any outgoing edge label to set a <em>keyword condition</em> — if that keyword appears in the upstream output the flow follows that branch. Leave an edge blank to make it the fallback (always followed if no keyword matched).</span>
+                    <p className="mt-1 text-purple-600 text-xs">Example: an Agent classifies a support ticket as "billing" or "technical" → a Router sends it to the right specialist agent based on which word appears in the output.</p>
+                  </div>
+                </li>
+                <li className="flex gap-2">
+                  <span className="shrink-0">✋</span>
+                  <span><strong>Approval</strong> — pauses execution and waits for a human to approve or reject. If rejected, the previous agent retries with your feedback.</span>
+                </li>
+                <li className="flex gap-2">
+                  <span className="shrink-0">⏹</span>
+                  <span><strong>End</strong> — marks the workflow as complete and captures the final output.</span>
+                </li>
+              </ul>
+            </div>
+          </div>
+          <div className="flex justify-end pt-2">
+            <Button variant="outline" onClick={() => setShowBuilderInfo(false)}>Got it</Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+
       <div className="flex flex-wrap items-center justify-between gap-2 px-4 py-2 border-b bg-gray-50">
         <div className="flex flex-wrap items-center gap-2 text-sm text-gray-500">
           <Clock className="h-3.5 w-3.5 shrink-0" />
@@ -141,9 +241,18 @@ function WorkflowDetail({ workflowId }: { workflowId: string }) {
             <span className="text-xs text-blue-600">Telegram</span>
           )}
         </div>
-        <Button variant="ghost" size="sm" onClick={() => setShowSettings(true)}>
-          <Settings className="h-4 w-4 mr-1" /> Settings
-        </Button>
+        <div className="flex items-center gap-1">
+          <button
+            onClick={() => setShowBuilderInfo(true)}
+            className="p-2 rounded-full text-gray-400 hover:text-purple-500 hover:bg-purple-50 transition-colors"
+            title="How to build a workflow"
+          >
+            <Info className="h-4 w-4" />
+          </button>
+          <Button variant="ghost" size="sm" onClick={() => setShowSettings(true)}>
+            <Settings className="h-4 w-4 mr-1" /> Settings
+          </Button>
+        </div>
       </div>
       <WorkflowBuilder workflow={workflow} />
     </>
@@ -152,13 +261,29 @@ function WorkflowDetail({ workflowId }: { workflowId: string }) {
 
 export function WorkflowsPage() {
   const { data: workflows = [], isLoading } = useWorkflows()
+  const { data: templates = [] } = useTemplates()
   const createWorkflow = useCreateWorkflow()
   const deleteWorkflow = useDeleteWorkflow()
+  const instantiate = useInstantiateTemplate()
+  const location = useLocation()
+
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [showCreate, setShowCreate] = useState(false)
+  const [createTab, setCreateTab] = useState<'scratch' | 'template'>('scratch')
+  const [showInfo, setShowInfo] = useState(false)
   const [newName, setNewName] = useState('')
   const [newDesc, setNewDesc] = useState('')
   const [createError, setCreateError] = useState('')
+  const [templateSearch, setTemplateSearch] = useState('')
+
+  // Auto-select a workflow navigated here from TemplatesPage
+  useEffect(() => {
+    const state = location.state as { selectedWorkflowId?: string } | null
+    if (state?.selectedWorkflowId) {
+      setSelectedId(state.selectedWorkflowId)
+      window.history.replaceState({}, '')
+    }
+  }, [location.state])
 
   const handleCreate = async () => {
     if (!newName.trim()) return
@@ -173,6 +298,22 @@ export function WorkflowsPage() {
       setCreateError(e instanceof Error ? e.message : 'Failed to create workflow')
     }
   }
+
+  const handleInstantiateFromDialog = async (slug: string) => {
+    setCreateError('')
+    try {
+      const result = await instantiate.mutateAsync(slug) as { workflow_id?: string }
+      setShowCreate(false)
+      if (result?.workflow_id) setSelectedId(result.workflow_id)
+    } catch (e: unknown) {
+      setCreateError(e instanceof Error ? e.message : 'Failed to create from template')
+    }
+  }
+
+  const filteredTemplates = templates.filter((t: Template) => {
+    const q = templateSearch.toLowerCase()
+    return !q || t.name.toLowerCase().includes(q) || t.description.toLowerCase().includes(q)
+  })
 
   if (selectedId) {
     const wf = workflows.find(w => w.id === selectedId)
@@ -200,8 +341,15 @@ export function WorkflowsPage() {
           <h1 className="text-2xl md:text-3xl font-bold text-gray-900">Workflows</h1>
           <p className="text-gray-500 mt-1 text-sm md:text-base">Build and manage agent collaboration workflows</p>
         </div>
-        <div className="flex flex-wrap gap-2 md:gap-3 shrink-0">
+        <div className="flex flex-wrap items-center gap-2 md:gap-3 shrink-0">
           <Link to="/templates"><Button variant="outline" size="sm" className="md:size-default">Browse Templates</Button></Link>
+          <button
+            onClick={() => setShowInfo(true)}
+            className="p-2 rounded-full text-gray-400 hover:text-blue-500 hover:bg-blue-50 transition-colors"
+            title="How to create a workflow"
+          >
+            <Info className="h-5 w-5" />
+          </button>
           <Button onClick={() => setShowCreate(true)} size="sm" className="md:size-default"><Plus className="h-4 w-4 mr-1 md:mr-2" />New Workflow</Button>
         </div>
       </div>
@@ -258,27 +406,178 @@ export function WorkflowsPage() {
         </div>
       )}
 
-      <Dialog open={showCreate} onOpenChange={v => { setShowCreate(v); setCreateError('') }}>
-        <DialogContent className="w-[95vw] max-w-md">
-          <DialogHeader><DialogTitle>Create New Workflow</DialogTitle></DialogHeader>
-          <div className="space-y-4">
-            {createError && <div className="bg-red-50 border border-red-200 text-red-700 rounded-lg px-4 py-2 text-sm">{createError}</div>}
-            <div>
-              <Label>Name *</Label>
-              <Input value={newName} onChange={e => setNewName(e.target.value)} placeholder="My Research Workflow" autoFocus />
-            </div>
-            <div>
-              <Label>Description</Label>
-              <Input value={newDesc} onChange={e => setNewDesc(e.target.value)} placeholder="What does this workflow do?" />
-            </div>
-            <div className="flex gap-3">
-              <Button onClick={handleCreate} disabled={!newName.trim() || createWorkflow.isPending} className="flex-1">
-                {createWorkflow.isPending ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : null}
-                Create Workflow
-              </Button>
-              <Button variant="outline" onClick={() => { setShowCreate(false); setCreateError('') }}>Cancel</Button>
+      {/* How-to instructions dialog */}
+      <Dialog open={showInfo} onOpenChange={setShowInfo}>
+        <DialogContent className="max-w-lg max-h-[90vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <GitFork className="h-5 w-5 text-purple-500" />
+              How to Create a Workflow
+            </DialogTitle>
+          </DialogHeader>
+          <div className="py-2 space-y-5">
+            <p className="text-sm text-gray-500">
+              A workflow is a pipeline of AI agents that collaborate to complete a task. Here's how to set one up from scratch.
+            </p>
+            <ol className="space-y-4">
+              {[
+                {
+                  icon: Bot,
+                  color: 'bg-blue-100 text-blue-600',
+                  title: 'Create your agents',
+                  body: 'Head to the Agents page and create one or more agents. Each agent needs a name, a model (e.g. GPT-4o), and a system prompt that defines its role.',
+                },
+                {
+                  icon: Plus,
+                  color: 'bg-purple-100 text-purple-600',
+                  title: 'Create a new workflow',
+                  body: 'Click "New Workflow", enter a name and an optional description, then hit Create. The workflow builder opens automatically.',
+                },
+                {
+                  icon: Share2,
+                  color: 'bg-green-100 text-green-600',
+                  title: 'Build the graph',
+                  body: 'In the builder, drag your agents from the side panel onto the canvas. Connect them in order: Start → Agent(s) → End. Add Approval nodes anywhere you want a human review step.',
+                },
+                {
+                  icon: Settings,
+                  color: 'bg-orange-100 text-orange-600',
+                  title: 'Configure the trigger',
+                  body: 'Click Settings (top-right of the builder) to choose how the workflow starts: manually, on a schedule (cron), via a Telegram message, or via a webhook POST.',
+                },
+                {
+                  icon: PlayCircle,
+                  color: 'bg-teal-100 text-teal-600',
+                  title: 'Run it',
+                  body: 'Hit the Run button in the builder toolbar, or go to the Executions page. Type a starting prompt and watch the agents work through the pipeline in real-time.',
+                },
+              ].map((step, i) => {
+                const StepIcon = step.icon
+                return (
+                  <li key={i} className="flex gap-3">
+                    <div className={`mt-0.5 shrink-0 w-8 h-8 rounded-full flex items-center justify-center ${step.color}`}>
+                      <StepIcon className="h-4 w-4" />
+                    </div>
+                    <div>
+                      <p className="text-sm font-semibold text-gray-800">
+                        <span className="text-gray-400 mr-1.5">{i + 1}.</span>{step.title}
+                      </p>
+                      <p className="text-sm text-gray-500 mt-0.5">{step.body}</p>
+                    </div>
+                  </li>
+                )
+              })}
+            </ol>
+            <div className="rounded-lg bg-blue-50 border border-blue-100 px-4 py-3 text-sm text-blue-700">
+              <strong>Tip:</strong> Not sure where to start? Use a <strong>Template</strong> — it creates agents and a pre-wired workflow in one click. Click "Browse Templates" to explore.
             </div>
           </div>
+          <div className="flex justify-end gap-2 pt-2">
+            <Button variant="outline" onClick={() => setShowInfo(false)}>Close</Button>
+            <Button onClick={() => { setShowInfo(false); setShowCreate(true) }}>
+              <Plus className="h-4 w-4 mr-2" />Create a Workflow
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={showCreate} onOpenChange={v => { setShowCreate(v); setCreateError(''); setCreateTab('scratch') }}>
+        <DialogContent className="w-[95vw] max-w-xl">
+          <DialogHeader><DialogTitle>New Workflow</DialogTitle></DialogHeader>
+
+          {/* Tabs */}
+          <div className="flex gap-1 p-1 bg-gray-100 rounded-lg mb-2">
+            <button
+              onClick={() => setCreateTab('scratch')}
+              className={`flex-1 flex items-center justify-center gap-2 px-3 py-2 rounded-md text-sm font-medium transition-colors ${createTab === 'scratch' ? 'bg-white shadow text-gray-900' : 'text-gray-500 hover:text-gray-700'}`}
+            >
+              <Plus className="h-4 w-4" /> From Scratch
+            </button>
+            <button
+              onClick={() => setCreateTab('template')}
+              className={`flex-1 flex items-center justify-center gap-2 px-3 py-2 rounded-md text-sm font-medium transition-colors ${createTab === 'template' ? 'bg-white shadow text-gray-900' : 'text-gray-500 hover:text-gray-700'}`}
+            >
+              <LayoutTemplate className="h-4 w-4" /> From Template
+            </button>
+          </div>
+
+          {createError && <div className="bg-red-50 border border-red-200 text-red-700 rounded-lg px-4 py-2 text-sm">{createError}</div>}
+
+          {createTab === 'scratch' ? (
+            <div className="space-y-4">
+              <div>
+                <Label>Name *</Label>
+                <Input value={newName} onChange={e => setNewName(e.target.value)} placeholder="My Research Workflow" autoFocus />
+              </div>
+              <div>
+                <Label>Description</Label>
+                <Input value={newDesc} onChange={e => setNewDesc(e.target.value)} placeholder="What does this workflow do?" />
+              </div>
+              <div className="flex gap-3">
+                <Button onClick={handleCreate} disabled={!newName.trim() || createWorkflow.isPending} className="flex-1">
+                  {createWorkflow.isPending ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : null}
+                  Create Workflow
+                </Button>
+                <Button variant="outline" onClick={() => { setShowCreate(false); setCreateError('') }}>Cancel</Button>
+              </div>
+            </div>
+          ) : (
+            <div className="space-y-3">
+              <div className="relative">
+                <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-400 pointer-events-none" />
+                <Input
+                  value={templateSearch}
+                  onChange={e => setTemplateSearch(e.target.value)}
+                  placeholder="Search templates…"
+                  className="pl-9"
+                />
+              </div>
+              <div className="max-h-80 overflow-y-auto space-y-2 pr-1">
+                {filteredTemplates.length === 0 ? (
+                  <div className="text-center py-8 text-gray-400">
+                    <Zap className="h-8 w-8 mx-auto mb-2 opacity-30" />
+                    <p className="text-sm">No templates found</p>
+                  </div>
+                ) : filteredTemplates.map((t: Template) => (
+                  <button
+                    key={t.slug}
+                    onClick={() => handleInstantiateFromDialog(t.slug)}
+                    disabled={instantiate.isPending}
+                    className="w-full text-left p-3 rounded-xl border border-gray-200 hover:border-blue-300 hover:bg-blue-50 transition-all disabled:opacity-50 group"
+                  >
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="min-w-0">
+                        <div className="flex flex-wrap items-center gap-1.5 mb-1">
+                          <span className="font-medium text-sm text-gray-900">{t.name}</span>
+                          {t.difficulty && (
+                            <span className="text-xs px-1.5 py-0.5 rounded bg-gray-100 text-gray-500 capitalize">{t.difficulty}</span>
+                          )}
+                          <span className="text-xs px-1.5 py-0.5 rounded bg-gray-100 text-gray-500">{t.agent_count} agents</span>
+                        </div>
+                        <p className="text-xs text-gray-500 line-clamp-1">{t.description}</p>
+                        {t.agents_preview && t.agents_preview.length > 0 && (
+                          <div className="flex items-center gap-1 mt-1.5 flex-wrap">
+                            {t.agents_preview.map((a, i) => (
+                              <span key={i} className="flex items-center gap-1">
+                                <span className="text-xs px-2 py-0.5 rounded-full text-white font-medium" style={{ backgroundColor: a.color }}>{a.name}</span>
+                                {i < t.agents_preview!.length - 1 && <ChevronRight className="h-3 w-3 text-gray-300 shrink-0" />}
+                              </span>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                      <ChevronRight className="h-4 w-4 text-gray-400 group-hover:text-blue-500 shrink-0 mt-1" />
+                    </div>
+                  </button>
+                ))}
+              </div>
+              {instantiate.isPending && (
+                <div className="flex items-center gap-2 text-sm text-blue-600 py-2">
+                  <Loader2 className="h-4 w-4 animate-spin" /> Creating workflow from template…
+                </div>
+              )}
+            </div>
+          )}
         </DialogContent>
       </Dialog>
     </div>

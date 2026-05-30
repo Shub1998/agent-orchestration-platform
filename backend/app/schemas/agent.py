@@ -19,6 +19,9 @@ class AgentCreate(BaseModel):
     avatar_color: str = Field(default="#6366f1")
     max_output_tokens: int = Field(default=4096, ge=256, le=32000)
     guardrail_keywords: list[str] = Field(default_factory=list)
+    input_guardrail_keywords: list[str] = Field(default_factory=list)
+    max_input_length: int = Field(default=0, ge=0, le=50000)
+    response_format: str = Field(default="text", pattern="^(text|json)$")
 
 
 class AgentUpdate(BaseModel):
@@ -37,6 +40,9 @@ class AgentUpdate(BaseModel):
     avatar_color: Optional[str] = None
     max_output_tokens: Optional[int] = None
     guardrail_keywords: Optional[list[str]] = None
+    input_guardrail_keywords: Optional[list[str]] = None
+    max_input_length: Optional[int] = None
+    response_format: Optional[str] = None
 
 
 class AgentResponse(BaseModel):
@@ -57,11 +63,20 @@ class AgentResponse(BaseModel):
     avatar_color: str
     max_output_tokens: int
     guardrail_keywords: list[str]
+    input_guardrail_keywords: list[str]
+    max_input_length: int
+    response_format: str
     created_at: datetime
     updated_at: datetime
 
     model_config = {"from_attributes": True}
 
 
+class ChatHistoryMessage(BaseModel):
+    role: str  # "user" or "assistant"
+    content: str
+
+
 class AgentTestRequest(BaseModel):
     prompt: str = Field(..., min_length=1)
+    history: list[ChatHistoryMessage] = Field(default_factory=list)

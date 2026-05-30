@@ -19,3 +19,25 @@ export function useInstantiateTemplate() {
     },
   })
 }
+
+export function useCreateTemplate() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (body: {
+      workflow_id: string
+      name: string
+      description: string
+      category: string
+      icon: string
+    }) => apiClient.post<Template>('/templates', body).then(r => r.data),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['templates'] }),
+  })
+}
+
+export function useDeleteTemplate() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (slug: string) => apiClient.delete(`/templates/${slug}`),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['templates'] }),
+  })
+}

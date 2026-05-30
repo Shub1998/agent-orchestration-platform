@@ -1,6 +1,6 @@
 import uuid
 from datetime import datetime
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from app.database import get_db
@@ -12,6 +12,7 @@ from app.schemas.workflow import (
     WorkflowEdgeCreate, WorkflowEdgeResponse, WorkflowSaveGraph, TriggerRequest,
 )
 from app.schemas.execution import ExecutionResponse
+from app.config import settings
 
 router = APIRouter(prefix="/workflows", tags=["workflows"])
 
@@ -137,8 +138,27 @@ async def save_workflow_graph(workflow_id: str, body: WorkflowSaveGraph, db: Asy
     )
 
 
+def _check_rate_limit(workflow_id: str) -> None:
+    """Raise 429 if this workflow has been triggered more than TRIGGER_RATE_LIMIT times/minute."""
+    try:
+        import redis as _redis
+        r = _redis.from_url(settings.REDIS_URL, socket_connect_timeout=1)
+        key = f"ratelimit:trigger:{workflow_id}"
+        pipe = r.pipeline()
+        pipe.incr(key)
+        pipe.expire(key, 60)
+        count, _ = pipe.execute()
+        if count > settings.TRIGGER_RATE_LIMIT:
+            raise HTTPException(429, f"Rate limit exceeded: max {settings.TRIGGER_RATE_LIMIT} triggers/minute per workflow")
+    except HTTPException:
+        raise
+    except Exception:
+        pass  # If Redis is unavailable, allow the request through
+
+
 @router.post("/{workflow_id}/trigger", response_model=ExecutionResponse, status_code=202)
-async def trigger_workflow(workflow_id: str, body: TriggerRequest, db: AsyncSession = Depends(get_db)):
+async def trigger_workflow(workflow_id: str, body: TriggerRequest, request: Request, db: AsyncSession = Depends(get_db)):
+    _check_rate_limit(workflow_id)
     workflow = await db.get(Workflow, workflow_id)
     if not workflow:
         raise HTTPException(404, "Workflow not found")

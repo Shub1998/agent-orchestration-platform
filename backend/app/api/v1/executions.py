@@ -34,17 +34,17 @@ async def get_execution(execution_id: str, db: AsyncSession = Depends(get_db)):
 
 
 @router.delete("/{execution_id}", status_code=204)
-async def cancel_execution(execution_id: str, db: AsyncSession = Depends(get_db)):
+async def delete_execution(execution_id: str, db: AsyncSession = Depends(get_db)):
     execution = await db.get(Execution, execution_id)
     if not execution:
         raise HTTPException(404, "Execution not found")
-    if execution.celery_task_id:
+    if execution.celery_task_id and execution.status in ("running", "pending", "awaiting_approval"):
         try:
             from app.workers.celery_app import celery_app
             celery_app.control.revoke(execution.celery_task_id, terminate=True)
         except Exception:
             pass
-    execution.status = "cancelled"
+    await db.delete(execution)
     await db.commit()
 
 

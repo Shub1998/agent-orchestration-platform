@@ -1,5 +1,5 @@
 import { NavLink } from 'react-router-dom'
-import { Bot, GitFork, Play, LayoutTemplate, Settings, Activity, Zap } from 'lucide-react'
+import { Bot, GitFork, Play, LayoutTemplate, Settings, Activity, Zap, Wrench } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
 const navItems = [
@@ -8,6 +8,7 @@ const navItems = [
   { to: '/workflows', icon: GitFork, label: 'Workflows' },
   { to: '/executions', icon: Play, label: 'Executions' },
   { to: '/templates', icon: LayoutTemplate, label: 'Templates' },
+  { to: '/tools', icon: Wrench, label: 'Custom Tools' },
 ]
 
 export function Sidebar() {

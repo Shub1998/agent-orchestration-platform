@@ -101,11 +101,24 @@ async def test_agent(agent_id: str, body: AgentTestRequest, db: AsyncSession = D
         "max_iterations": min(agent.max_iterations, 5),
         "memory_enabled": False,
         "tools": agent.tools or [],
+        "max_output_tokens": agent.max_output_tokens or 4096,
+        "guardrail_keywords": agent.guardrail_keywords or [],
+        "input_guardrail_keywords": agent.input_guardrail_keywords or [],
+        "max_input_length": agent.max_input_length or 0,
+        "response_format": agent.response_format or "text",
     }
     node_fn = agent_builder.build(agent_dict)
     test_execution_id = f"test_{str(uuid.uuid4())[:8]}"
+    from langchain_core.messages import AIMessage
+    history_messages = []
+    for msg in body.history:
+        if msg.role == "user":
+            history_messages.append(HumanMessage(content=msg.content))
+        else:
+            history_messages.append(AIMessage(content=msg.content))
+    history_messages.append(HumanMessage(content=body.prompt))
     state = AgentFlowState(
-        messages=[HumanMessage(content=body.prompt)],
+        messages=history_messages,
         current_agent="", execution_id=test_execution_id, workflow_id="test",
         input=body.prompt, output="", iteration=0, context={}, error=None, telegram_chat_id=None,
     )

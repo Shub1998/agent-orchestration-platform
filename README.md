@@ -19,27 +19,69 @@ A production-ready platform for creating AI agents, configuring collaborative wo
 
 ## Architecture
 
+```mermaid
+graph TB
+    subgraph UI["React Frontend (port 3001)"]
+        RF[React Flow Builder]
+        EX[Executions / LogStream]
+        AG[Agent Manager]
+    end
+
+    subgraph API["FastAPI Backend (port 8000)"]
+        REST[REST API v1]
+        WS[WebSocket /ws/executions]
+        MW[API-Key Middleware]
+    end
+
+    subgraph Workers["Celery Workers"]
+        WT[run_workflow_task]
+        RA[run_agent_direct_task]
+        RW[resume_workflow_task]
+        BS[Beat: check_scheduled_workflows]
+        BT[Beat: check_approval_timeouts]
+    end
+
+    subgraph Runtime["LangGraph Runtime"]
+        GC[graph_compiler.py]
+        AB[agent_builder.py]
+        IG[Input Guardrails]
+        OG[Output Guardrails]
+        MM[memory_manager ChromaDB]
+    end
+
+    subgraph Integrations["Integrations"]
+        TG[Telegram Bot]
+    end
+
+    UI -->|HTTP / WebSocket| API
+    API -->|dispatch task| Workers
+    Workers -->|compile + invoke| Runtime
+    Runtime -->|pub/sub events| REDIS[(Redis)]
+    REDIS -->|subscribe| WS
+    WS -->|stream| UI
+    Workers -->|read/write| DB[(SQLite)]
+    API -->|read/write| DB
+    Runtime -->|vectors| CHROMA[(ChromaDB)]
+    TG -->|message trigger| Workers
+    Workers -->|reply| TG
+    Workers -->|rate limit counter| REDIS
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                         AgentFlow Platform                        │
-├───────────────┬───────────────────┬─────────────┬───────────────┤
-│  React UI     │  FastAPI Backend  │   Celery    │  Telegram Bot  │
-│  (port 3000)  │   (port 8000)     │   Workers   │   (polling)    │
-│               │                   │             │                │
-│  React Flow   │  REST API +       │  LangGraph  │  python-       │
-│  Visual       │  WebSocket        │  Execution  │  telegram-bot  │
-│  Builder      │  Streaming        │  Engine     │                │
-└───────┬───────┴────────┬──────────┴──────┬──────┴───────┬───────┘
-        │                │                 │              │
-        ▼                ▼                 ▼              │
-  ┌──────────┐    ┌──────────┐    ┌──────────────┐       │
-  │  SQLite  │    │  Redis   │    │   ChromaDB   │       │
-  │ (SQLAlch)│    │(pub/sub) │    │(vector mem.) │       │
-  └──────────┘    └──────────┘    └──────────────┘       │
-                       ▲                                  │
-                       └──────────────────────────────────┘
-                        Celery tasks dispatched via Redis
-```
+
+### Execution Flow
+
+1. User triggers workflow via UI **or** Telegram message
+2. FastAPI creates an `Execution` record → dispatches Celery task
+3. Celery worker loads workflow from DB, compiles LangGraph `StateGraph`
+4. Graph executes agents sequentially/conditionally, each node:
+   - **Input guardrails**: checks keywords + length before calling LLM
+   - Retrieves memory from ChromaDB
+   - Calls LLM (with optional JSON response_format for router agents)
+   - Executes tools (web_search, calculator, custom webhooks, etc.)
+   - **Output guardrails**: blocks forbidden keywords in response
+   - Emits log events to Redis pub/sub
+   - Stores output to ChromaDB memory
+5. FastAPI WebSocket subscribes to Redis → streams logs to browser in real-time
+6. On completion: Telegram bot replies to the originating chat
 
 ### Execution Flow
 
@@ -138,14 +180,24 @@ make demo
 
 This creates the Research Pipeline and Customer Support Triage workflows and opens the UI.
 
+### Optional: API Key Authentication
+
+Set `API_KEY=your-secret-key` in `.env` to require an `X-API-Key` header on all API requests. Leave it empty (default) to disable authentication for local development.
+
+### Optional: Approval Timeout
+
+Set `APPROVAL_TIMEOUT_MINUTES=60` (default) to automatically fail executions stuck in `awaiting_approval` after that interval. The Celery Beat service checks every 5 minutes.
+
 ---
 
 ## Features
 
 ### Agent Management
 - **Full CRUD**: name, role, system prompt, model (GPT-4o, Claude 3.5, etc.), temperature
-- **Tools**: web_search (DuckDuckGo), web_scraper, calculator, datetime, send_telegram
+- **Tools**: web_search (DuckDuckGo), web_scraper, calculator, datetime, send_telegram, custom webhooks
 - **Memory**: per-agent ChromaDB vector store, persisted across executions
+- **Guardrails**: output keyword blocking + input keyword blocking + max input/output length limits
+- **Output format**: `text` (default) or `json` — forces structured JSON output, ideal for router agents
 - **Live test**: test any agent inline without running a full workflow
 
 ### Visual Workflow Builder

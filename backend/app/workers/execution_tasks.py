@@ -180,6 +180,55 @@ def _send_telegram_reply(chat_id: int, message: str):
         pass
 
 
+def _get_execution_chat_id(execution_id: str) -> int | None:
+    """Return the Telegram chat_id stored in the execution trigger payload, if any."""
+    try:
+        conn = _get_sync_db()
+        cur = conn.cursor()
+        cur.execute("SELECT trigger_payload FROM executions WHERE id=?", (execution_id,))
+        row = cur.fetchone()
+        conn.close()
+        if row and row[0]:
+            payload = json.loads(row[0])
+            return payload.get("chat_id")
+    except Exception:
+        pass
+    return None
+
+
+def _send_telegram_approval_request(chat_id: int, execution_id: str, agent_output: str):
+    """Send an approval prompt with Approve/Reject inline buttons to Telegram."""
+    try:
+        import httpx
+        if not settings.TELEGRAM_BOT_TOKEN:
+            return
+        url = f"https://api.telegram.org/bot{settings.TELEGRAM_BOT_TOKEN}/sendMessage"
+        preview = agent_output[:800] + ("…" if len(agent_output) > 800 else "")
+        # Plain text — no parse_mode to avoid Markdown issues in agent output
+        text = (
+            "⏸ Workflow paused — Human Approval required\n\n"
+            "Agent output:\n"
+            + ("─" * 30) + "\n"
+            + preview + "\n"
+            + ("─" * 30) + "\n\n"
+            "Approve to continue the workflow, or Reject (you'll be asked for a reason)."
+        )
+        keyboard = {
+            "inline_keyboard": [[
+                {"text": "✅ Approve", "callback_data": f"approve_wf:{execution_id}"},
+                {"text": "❌ Reject",  "callback_data": f"reject_wf:{execution_id}"},
+            ]]
+        }
+        with httpx.Client(timeout=15) as client:
+            client.post(url, json={
+                "chat_id": chat_id,
+                "text": text[:4096],
+                "reply_markup": keyboard,
+            })
+    except Exception:
+        pass
+
+
 def _finalize_execution(execution_id: str, final_state: dict, telegram_chat_id=None):
     """Persist completion state and optionally reply via Telegram."""
     output = final_state.get("output", "")
@@ -208,8 +257,6 @@ def _finalize_execution(execution_id: str, final_state: dict, telegram_chat_id=N
 
 @celery_app.task(bind=True, max_retries=2, name="run_workflow")
 def run_workflow_task(self, workflow_id: str, execution_id: str, input_data: dict):
-    from langgraph.errors import GraphInterrupt
-
     try:
         _update_execution_sync(execution_id, "running", celery_task_id=self.request.id)
         log_emitter.emit(execution_id, "info", "Starting workflow execution",
@@ -247,26 +294,15 @@ def run_workflow_task(self, workflow_id: str, execution_id: str, input_data: dic
         )
 
         config = {"configurable": {"thread_id": execution_id}}
+        final_state = compiled.invoke(initial_state, config=config)
 
-        try:
-            final_state = compiled.invoke(initial_state, config=config)
-        except GraphInterrupt:
-            # Graph paused at an approval node — update DB and let the UI know.
-            # resume_workflow_task will be dispatched by the /approve API endpoint.
-            import sqlite3 as _sqlite3
-            current_output = ""
-            try:
-                conn = _get_sync_db()
-                cur = conn.cursor()
-                cur.execute("SELECT final_output FROM executions WHERE id=?", (execution_id,))
-                row = cur.fetchone()
-                current_output = (row[0] or "") if row else ""
-                conn.close()
-            except Exception:
-                pass
-
+        # LangGraph 1.x: interrupt() puts __interrupt__ in state instead of raising GraphInterrupt
+        if final_state.get("__interrupt__"):
+            current_output = final_state.get("output", "")
             _update_execution_sync(execution_id, "awaiting_approval", output=current_output)
             log_emitter.emit_completion(execution_id, "awaiting_approval")
+            if telegram_chat_id:
+                _send_telegram_approval_request(telegram_chat_id, execution_id, current_output)
             return {"status": "awaiting_approval", "execution_id": execution_id}
 
         _finalize_execution(execution_id, final_state, telegram_chat_id)
@@ -277,6 +313,63 @@ def run_workflow_task(self, workflow_id: str, execution_id: str, input_data: dic
         _save_log_sync(execution_id, "error", f"Workflow failed: {error_msg}")
         _update_execution_sync(execution_id, "failed", error=error_msg)
         log_emitter.emit_completion(execution_id, "failed", error=error_msg)
+        raise
+
+
+@celery_app.task(bind=True, max_retries=2, name="run_agent_direct")
+def run_agent_direct_task(self, agent_id: str, chat_id: int, text: str):
+    """Run a single agent directly for Telegram direct-chat mode."""
+    conn = _get_sync_db()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT id, name, role, system_prompt, model, provider, temperature, "
+            "max_iterations, memory_enabled, tools, max_output_tokens, guardrail_keywords "
+            "FROM agents WHERE id=?",
+            (agent_id,),
+        )
+        row = cur.fetchone()
+        if not row:
+            _send_telegram_reply(chat_id, "❌ Agent not found.")
+            return
+        agent_data = {
+            "id": row[0], "name": row[1], "role": row[2], "system_prompt": row[3],
+            "model": row[4], "provider": row[5], "temperature": row[6],
+            "max_iterations": row[7], "memory_enabled": bool(row[8]),
+            "tools": json.loads(row[9]) if row[9] else [],
+            "max_output_tokens": row[10] or 4096,
+            "guardrail_keywords": json.loads(row[11]) if row[11] else [],
+        }
+    finally:
+        conn.close()
+
+    execution_id = f"tg-direct-{str(uuid.uuid4())[:8]}"
+
+    from app.core.agent_builder import agent_builder
+    from app.core.state import AgentFlowState
+
+    agent_node = agent_builder.build(agent_data)
+    state = AgentFlowState(
+        messages=[HumanMessage(content=text)],
+        current_agent="",
+        execution_id=execution_id,
+        workflow_id="direct",
+        input=text,
+        output="",
+        iteration=0,
+        context={"chat_id": chat_id, "source": "telegram_direct"},
+        error=None,
+        telegram_chat_id=chat_id,
+        approval_decision=None,
+        rejection_comment=None,
+    )
+
+    try:
+        result = agent_node(state)
+        output = result.get("output", "").strip()
+        _send_telegram_reply(chat_id, output or "Agent returned an empty response.")
+    except Exception as exc:
+        _send_telegram_reply(chat_id, f"❌ Error: {str(exc)[:200]}")
         raise
 
 
@@ -302,28 +395,19 @@ def resume_workflow_task(self, workflow_id: str, execution_id: str, decision: st
         config = {"configurable": {"thread_id": execution_id}}
 
         resume_payload = {"decision": decision, "comment": comment}
+        final_state = compiled.invoke(Command(resume=resume_payload), config=config)
 
-        try:
-            final_state = compiled.invoke(Command(resume=resume_payload), config=config)
-        except GraphInterrupt:
-            # Another approval node in the same workflow
-            import sqlite3 as _sqlite3
-            current_output = ""
-            try:
-                conn = _get_sync_db()
-                cur = conn.cursor()
-                cur.execute("SELECT final_output FROM executions WHERE id=?", (execution_id,))
-                row = cur.fetchone()
-                current_output = (row[0] or "") if row else ""
-                conn.close()
-            except Exception:
-                pass
-
+        # LangGraph 1.x: another approval node hit
+        if final_state.get("__interrupt__"):
+            current_output = final_state.get("output", "")
             _update_execution_sync(execution_id, "awaiting_approval", output=current_output)
             log_emitter.emit_completion(execution_id, "awaiting_approval")
+            tg_chat_id = _get_execution_chat_id(execution_id)
+            if tg_chat_id:
+                _send_telegram_approval_request(tg_chat_id, execution_id, current_output)
             return {"status": "awaiting_approval", "execution_id": execution_id}
 
-        telegram_chat_id = final_state.get("telegram_chat_id")
+        telegram_chat_id = final_state.get("telegram_chat_id") or _get_execution_chat_id(execution_id)
         _finalize_execution(execution_id, final_state, telegram_chat_id)
         return {"status": "completed", "output": final_state.get("output", "")}
 

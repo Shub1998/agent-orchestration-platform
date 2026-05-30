@@ -10,9 +10,13 @@ from app.config import settings
 
 def _get_checkpointer():
     try:
+        import sqlite3 as _sqlite3
         from langgraph.checkpoint.sqlite import SqliteSaver
         os.makedirs(os.path.dirname(settings.CHECKPOINTER_DB_PATH) or ".", exist_ok=True)
-        return SqliteSaver.from_conn_string(settings.CHECKPOINTER_DB_PATH)
+        conn = _sqlite3.connect(settings.CHECKPOINTER_DB_PATH, check_same_thread=False)
+        cp = SqliteSaver(conn)
+        cp.setup()
+        return cp
     except ImportError:
         pass
     from langgraph.checkpoint.memory import MemorySaver
@@ -183,56 +187,84 @@ class GraphCompiler:
         conditional = [e for e in outgoing_edges if e.get("condition")]
         default_edge = next((e for e in outgoing_edges if not e.get("condition")), None)
 
+        def _extract_json(text: str) -> dict | None:
+            """Try to parse JSON from raw text or from a markdown code block."""
+            stripped = text.strip()
+            # Strip ```json ... ``` fences
+            if stripped.startswith("```"):
+                lines = stripped.splitlines()
+                inner = "\n".join(lines[1:-1] if lines[-1].strip() == "```" else lines[1:])
+                stripped = inner.strip()
+            try:
+                parsed = json.loads(stripped)
+                return parsed if isinstance(parsed, dict) else None
+            except (json.JSONDecodeError, Exception):
+                pass
+            # Try extracting first {...} block from mixed text
+            start = text.find("{")
+            end = text.rfind("}")
+            if start != -1 and end > start:
+                try:
+                    parsed = json.loads(text[start:end + 1])
+                    return parsed if isinstance(parsed, dict) else None
+                except (json.JSONDecodeError, Exception):
+                    pass
+            return None
+
+        def _flatten_json(obj: dict, prefix: str = "") -> dict:
+            """Flatten nested JSON to dot-notation keys for deep matching."""
+            result = {}
+            for k, v in obj.items():
+                full_key = f"{prefix}.{k}" if prefix else k
+                result[full_key] = v
+                if isinstance(v, dict):
+                    result.update(_flatten_json(v, full_key))
+            return result
+
         def router(state: AgentFlowState) -> str:
             output = state.get("output", "")
             execution_id = state.get("execution_id", "")
 
-            # Try to parse JSON once
-            parsed_json: dict | None = None
-            try:
-                parsed_json = json.loads(output)
-                if not isinstance(parsed_json, dict):
-                    parsed_json = None
-            except (json.JSONDecodeError, Exception):
-                pass
+            parsed_json = _extract_json(output)
+            flat = _flatten_json(parsed_json) if parsed_json else {}
 
             for edge in conditional:
                 condition = (edge.get("condition") or "").strip().lower()
                 if not condition:
                     continue
 
-                # 1. JSON key match  e.g. {"category": "billing"}
-                if parsed_json:
-                    for k, v in parsed_json.items():
-                        if condition in k.lower() or condition in str(v).lower():
-                            log_emitter.emit(
-                                execution_id, "info",
-                                f"Router: condition '{condition}' matched JSON field '{k}'={v!r}",
-                            )
+                # 1. Exact JSON value match — condition == value of any key (most reliable)
+                if flat:
+                    for k, v in flat.items():
+                        if condition == str(v).lower():
+                            log_emitter.emit(execution_id, "info",
+                                             f"Router: condition '{condition}' exact-matched JSON '{k}'={v!r}")
                             return edge["target_node_id"]
 
-                # 2. Plain text substring match (case-insensitive)
+                # 2. JSON key or value substring match
+                if flat:
+                    for k, v in flat.items():
+                        if condition in k.lower() or condition in str(v).lower():
+                            log_emitter.emit(execution_id, "info",
+                                             f"Router: condition '{condition}' substring-matched JSON '{k}'={v!r}")
+                            return edge["target_node_id"]
+
+                # 3. Plain text substring match (case-insensitive)
                 if condition in output.lower():
-                    log_emitter.emit(
-                        execution_id, "info",
-                        f"Router: condition '{condition}' matched in output text",
-                    )
+                    log_emitter.emit(execution_id, "info",
+                                     f"Router: condition '{condition}' matched in output text")
                     return edge["target_node_id"]
 
-            # 3. Unconditional default edge (drawn without a condition label)
+            # 4. Unconditional default edge
             if default_edge:
-                log_emitter.emit(
-                    execution_id, "info",
-                    f"Router: no condition matched — taking default edge",
-                )
+                log_emitter.emit(execution_id, "info",
+                                 f"Router: no condition matched — taking default edge")
                 return default_edge["target_node_id"]
 
-            # 4. Hard fallback: first conditional edge with a warning
+            # 5. Hard fallback: first conditional edge with a warning
             fallback = outgoing_edges[0]["target_node_id"]
-            log_emitter.emit(
-                execution_id, "info",
-                f"Router: no condition matched and no default edge — falling back to '{fallback}'",
-            )
+            log_emitter.emit(execution_id, "info",
+                             f"Router: no condition matched and no default — falling back to '{fallback}'")
             return fallback
 
         return router

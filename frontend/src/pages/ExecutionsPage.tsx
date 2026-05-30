@@ -1,13 +1,14 @@
 import { useState, useMemo } from 'react'
 import { useParams, Link, useNavigate } from 'react-router-dom'
 import { useQueryClient } from '@tanstack/react-query'
-import { useExecutions, useExecution, useCancelExecution, useApproveExecution, useExecutionLogs, executionKeys } from '@/api/executions'
+import { useExecutions, useExecution, useDeleteExecution, useApproveExecution, useExecutionLogs, executionKeys } from '@/api/executions'
+import { useExecutionStore } from '@/stores/executionStore'
 import { LogStream } from '@/components/executions/LogStream'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Textarea } from '@/components/ui/textarea'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
-import { ArrowLeft, CheckCircle, XCircle, Clock, Loader2, Play, Coins, Hash, UserCheck, ThumbsUp, ThumbsDown, MessageSquare, Terminal } from 'lucide-react'
+import { ArrowLeft, CheckCircle, XCircle, Clock, Loader2, Play, Coins, Hash, UserCheck, ThumbsUp, ThumbsDown, MessageSquare, Terminal, Trash2 } from 'lucide-react'
 import type { Execution, LogEntry } from '@/api/types'
 
 function StatusBadge({ status }: { status: Execution['status'] }) {
@@ -141,21 +142,53 @@ const AGENT_COLORS = [
   'bg-pink-100 text-pink-800 border-pink-200',
 ]
 
-function MessagesThread({ executionId }: { executionId: string }) {
-  const { data: logs = [] } = useExecutionLogs(executionId)
+// Stable empty array — prevents Zustand selector from returning a new [] reference every render,
+// which would cause Object.is comparison to always fail and trigger infinite re-renders.
+const EMPTY_LOGS: import('@/api/types').LogEntry[] = []
+
+function MessagesThread({ executionId, executionStatus }: { executionId: string; executionStatus?: string }) {
+  // Poll while running, pending, or awaiting_approval (so agent output appears while paused for review)
+  const isActive = executionStatus === 'running' || executionStatus === 'pending' || executionStatus === 'awaiting_approval'
+
+  // REST: DB-persisted logs (poll while execution is active)
+  const { data: dbLogs = [] } = useExecutionLogs(executionId, isActive ? 2000 : false)
+
+  // WebSocket store: live logs for the currently-streamed execution.
+  // When this execution is not the active stream, return the stable EMPTY_LOGS constant
+  // so Zustand's Object.is check doesn't see a new [] on every store update.
+  const storeLogs = useExecutionStore(state =>
+    state.activeExecutionId === executionId ? state.logs : EMPTY_LOGS
+  )
 
   const messages = useMemo(() => {
+    // Merge DB logs + live WS logs, deduplicate by id (both sources may carry same entry)
+    const seen = new Set<string>()
     const agentColorMap: Record<string, string> = {}
     let colorIdx = 0
-    return (logs as LogEntry[])
-      .filter((l: any) => l.level === 'agent_message' && l.agent_name && l.message)
+
+    return [...(dbLogs as LogEntry[]), ...storeLogs]
+      .filter((l: any) => {
+        // llm_end logs carry agent output in metadata.output (new) or metadata.output_preview (legacy)
+        if (l.level !== 'llm_end' || !l.agent_name) return false
+        const meta = l.metadata as any
+        if (!meta?.output && !meta?.output_preview) return false
+        // Use timestamp+agent_name — DB logs have id, WS logs don't, so id-based dedup fails
+        const key: string = `${l.timestamp}|${l.agent_name}`
+        if (seen.has(key)) return false
+        seen.add(key)
+        return true
+      })
+      .sort((a: any, b: any) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime())
       .map((l: any) => {
         if (!agentColorMap[l.agent_name]) {
           agentColorMap[l.agent_name] = AGENT_COLORS[colorIdx++ % AGENT_COLORS.length]
         }
-        return { ...l, colorClass: agentColorMap[l.agent_name] }
+        const meta = l.metadata as any
+        const outputText: string = meta.output || meta.output_preview || ''
+        const isTruncated: boolean = meta.truncated || (!!meta.output_preview && !meta.output)
+        return { ...l, message: outputText, truncated: isTruncated, colorClass: agentColorMap[l.agent_name] }
       })
-  }, [logs])
+  }, [dbLogs, storeLogs])
 
   if (messages.length === 0) {
     return (
@@ -180,7 +213,12 @@ function MessagesThread({ executionId }: { executionId: string }) {
               <span className="text-xs text-gray-400">
                 {msg.timestamp ? new Date(msg.timestamp).toLocaleTimeString() : ''}
               </span>
-              {(msg.metadata as any)?.truncated && (
+              {(msg.metadata as any)?.input_tokens > 0 && (
+                <span className="text-xs text-gray-400">
+                  {(msg.metadata as any).input_tokens}/{(msg.metadata as any).output_tokens} tokens
+                </span>
+              )}
+              {(msg as any).truncated && (
                 <span className="text-xs text-amber-600 italic">output truncated</span>
               )}
             </div>
@@ -221,7 +259,7 @@ function LogMessagesTabs({ executionId, executionStatus }: { executionId: string
       <div className="flex-1 overflow-hidden">
         {tab === 'logs'
           ? <LogStream executionId={executionId} executionStatus={executionStatus} />
-          : <MessagesThread executionId={executionId} />}
+          : <MessagesThread executionId={executionId} executionStatus={executionStatus} />}
       </div>
     </div>
   )
@@ -229,9 +267,15 @@ function LogMessagesTabs({ executionId, executionStatus }: { executionId: string
 
 function ExecutionDetail({ id }: { id: string }) {
   const { data: execution, isLoading } = useExecution(id)
-  const cancelExecution = useCancelExecution()
+  const deleteExecution = useDeleteExecution()
   const navigate = useNavigate()
   const queryClient = useQueryClient()
+
+  const handleDelete = async () => {
+    if (!confirm('Delete this execution and all its logs? This cannot be undone.')) return
+    await deleteExecution.mutateAsync(id)
+    navigate('/executions')
+  }
 
   if (isLoading) return <div className="flex justify-center py-20"><Loader2 className="h-8 w-8 animate-spin text-gray-400" /></div>
   if (!execution) return <div className="p-8 text-gray-400">Execution not found</div>
@@ -311,9 +355,21 @@ function ExecutionDetail({ id }: { id: string }) {
             <h3 className="font-semibold text-gray-800 text-sm md:text-base">
               {execution.status === 'awaiting_approval' ? 'Agent Output (Pending Review)' : 'Output'}
             </h3>
-            {(execution.status === 'running' || execution.status === 'pending') && (
-              <Button variant="destructive" size="sm" onClick={() => cancelExecution.mutate(id)}>Cancel</Button>
-            )}
+            <div className="flex gap-2">
+              {(execution.status === 'running' || execution.status === 'pending') && (
+                <Button variant="destructive" size="sm" disabled={deleteExecution.isPending} onClick={handleDelete}>
+                  {deleteExecution.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin mr-1" /> : null}
+                  Cancel
+                </Button>
+              )}
+              {(execution.status === 'completed' || execution.status === 'failed' || execution.status === 'cancelled') && (
+                <Button variant="outline" size="sm" disabled={deleteExecution.isPending} onClick={handleDelete}
+                  className="text-red-600 border-red-200 hover:bg-red-50">
+                  {deleteExecution.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin mr-1" /> : <Trash2 className="h-3.5 w-3.5 mr-1" />}
+                  Delete
+                </Button>
+              )}
+            </div>
           </div>
 
           {/* Approval panel — keyed on final_output so it remounts fresh when a new
@@ -358,6 +414,14 @@ function ExecutionDetail({ id }: { id: string }) {
 export function ExecutionsPage() {
   const { id } = useParams()
   const { data: executions = [], isLoading } = useExecutions()
+  const deleteExecution = useDeleteExecution()
+
+  const handleDeleteFromList = async (e: React.MouseEvent, execId: string) => {
+    e.preventDefault()
+    e.stopPropagation()
+    if (!confirm('Delete this execution and all its logs?')) return
+    deleteExecution.mutate(execId)
+  }
 
   if (id) return <ExecutionDetail id={id} />
 
@@ -392,7 +456,17 @@ export function ExecutionsPage() {
                     {new Date(exec.created_at).toLocaleString()} · <span className="hidden sm:inline">{exec.trigger_type} trigger</span>
                   </p>
                 </div>
-                <StatusBadge status={exec.status} />
+                <div className="flex items-center gap-2 shrink-0">
+                  <StatusBadge status={exec.status} />
+                  <button
+                    onClick={(e) => handleDeleteFromList(e, exec.id)}
+                    disabled={deleteExecution.isPending}
+                    className="p-1.5 text-gray-300 hover:text-red-500 hover:bg-red-50 rounded transition-colors"
+                    title="Delete execution"
+                  >
+                    <Trash2 className="h-4 w-4" />
+                  </button>
+                </div>
               </div>
             </Link>
           ))}

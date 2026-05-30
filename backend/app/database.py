@@ -26,3 +26,22 @@ async def get_db() -> AsyncSession:
 async def init_db():
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        await _migrate_schema(conn)
+
+
+async def _migrate_schema(conn):
+    """Add columns that were introduced after the initial schema."""
+    migrations = [
+        ("agents", "input_guardrail_keywords", "JSON NOT NULL DEFAULT '[]'"),
+        ("agents", "max_input_length",          "INTEGER NOT NULL DEFAULT 0"),
+        ("agents", "response_format",           "VARCHAR(20) NOT NULL DEFAULT 'text'"),
+    ]
+    for table, column, definition in migrations:
+        try:
+            await conn.execute(
+                __import__("sqlalchemy").text(
+                    f"ALTER TABLE {table} ADD COLUMN {column} {definition}"
+                )
+            )
+        except Exception:
+            pass  # Column already exists — SQLite raises OperationalError, that's fine

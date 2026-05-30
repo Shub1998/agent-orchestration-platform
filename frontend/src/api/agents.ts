@@ -50,10 +50,15 @@ export function useDeleteAgent() {
   })
 }
 
+export interface ChatMessage {
+  role: 'user' | 'assistant'
+  content: string
+}
+
 export function useTestAgent() {
   return useMutation({
-    mutationFn: ({ id, prompt }: { id: string; prompt: string }) =>
-      apiClient.post(`/agents/${id}/test`, { prompt }).then(r => r.data),
+    mutationFn: ({ id, prompt, history = [] }: { id: string; prompt: string; history?: ChatMessage[] }) =>
+      apiClient.post(`/agents/${id}/test`, { prompt, history }).then(r => r.data),
   })
 }
 

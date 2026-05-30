@@ -10,6 +10,16 @@ class Settings(BaseSettings):
     APP_VERSION: str = "1.0.0"
     DEBUG: bool = False
 
+    # Security — set API_KEY to a non-empty string to require X-API-Key on all requests.
+    # Leave empty (default) to disable authentication for local development.
+    API_KEY: str = ""
+
+    # Approval timeout — executions stuck in awaiting_approval longer than this are failed.
+    APPROVAL_TIMEOUT_MINUTES: int = 60
+
+    # Trigger rate limit — max workflow triggers per minute per workflow ID.
+    TRIGGER_RATE_LIMIT: int = 30
+
     # Database
     DATABASE_URL: str = "sqlite+aiosqlite:///./data/agentflow.db"
     CHECKPOINTER_DB_PATH: str = "./data/checkpointer.db"

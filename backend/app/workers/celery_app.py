@@ -23,5 +23,9 @@ celery_app.conf.update(
             "task": "check_scheduled_workflows",
             "schedule": 60.0,  # every 60 seconds
         },
+        "check-approval-timeouts": {
+            "task": "check_approval_timeouts",
+            "schedule": 300.0,  # every 5 minutes
+        },
     },
 )

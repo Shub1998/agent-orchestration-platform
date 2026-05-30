@@ -1,16 +1,21 @@
 """
-Celery Beat task: scans for workflows with trigger_type='schedule' every minute
-and fires those whose cron expression is due.
+Celery Beat tasks:
+- check_scheduled_workflows: fires cron-scheduled workflows every minute.
+- check_approval_timeouts: fails executions stuck in awaiting_approval past APPROVAL_TIMEOUT_MINUTES.
 """
 import json
 import logging
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 
-from croniter import croniter
+try:
+    from croniter import croniter
+except ImportError:
+    croniter = None  # type: ignore
 
 from app.workers.celery_app import celery_app
 from app.workers.execution_tasks import _get_sync_db, run_workflow_task
+from app.config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +38,10 @@ def check_scheduled_workflows():
                 cron_expr = cfg.get("cron", "")
                 if not cron_expr:
                     logger.debug("Workflow %s has no cron expression, skipping", wf_id)
+                    continue
+
+                if croniter is None:
+                    logger.warning("croniter not installed; skipping scheduled workflow %s", wf_id)
                     continue
 
                 # Find the most recent tick that should have fired
@@ -70,5 +79,36 @@ def check_scheduled_workflows():
 
             except Exception:
                 logger.exception("Failed to process scheduled workflow %s (%s)", wf_id, wf_name)
+    finally:
+        conn.close()
+
+
+@celery_app.task(name="check_approval_timeouts")
+def check_approval_timeouts():
+    """Fail executions that have been waiting for approval longer than APPROVAL_TIMEOUT_MINUTES."""
+    timeout_minutes = settings.APPROVAL_TIMEOUT_MINUTES
+    if timeout_minutes <= 0:
+        return
+
+    cutoff = (datetime.utcnow() - timedelta(minutes=timeout_minutes)).isoformat()
+    conn = _get_sync_db()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT id FROM executions WHERE status='awaiting_approval' AND created_at < ?",
+            (cutoff,),
+        )
+        rows = cur.fetchall()
+        for (execution_id,) in rows:
+            now = datetime.utcnow().isoformat()
+            cur.execute(
+                "UPDATE executions SET status='failed', completed_at=?, error_message=? WHERE id=?",
+                (now, f"Approval timed out after {timeout_minutes} minutes", execution_id),
+            )
+            logger.warning("Approval timeout: execution %s failed after %d minutes", execution_id, timeout_minutes)
+        if rows:
+            conn.commit()
+    except Exception:
+        logger.exception("Error checking approval timeouts")
     finally:
         conn.close()

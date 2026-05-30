@@ -26,5 +26,9 @@ class Agent(Base):
     # Guardrails
     max_output_tokens: Mapped[int] = mapped_column(Integer, nullable=False, default=4096)
     guardrail_keywords: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    input_guardrail_keywords: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    max_input_length: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    # Output format ("text" or "json") — "json" forces structured JSON output for router agents
+    response_format: Mapped[str] = mapped_column(String(20), nullable=False, default="text")
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)

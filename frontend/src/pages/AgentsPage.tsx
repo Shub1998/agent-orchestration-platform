@@ -1,5 +1,6 @@
-import { useState } from 'react'
+import { useState, useRef, useEffect } from 'react'
 import { useAgents, useCreateAgent, useUpdateAgent, useDeleteAgent, useTestAgent, useAvailableTools } from '@/api/agents'
+import type { ChatMessage } from '@/api/agents'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
@@ -8,7 +9,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
-import { Bot, Plus, Trash2, Edit, Zap, Brain, Wrench, Send, Loader2, Shield, X } from 'lucide-react'
+import { Bot, Plus, Trash2, Edit, MessageSquare, Brain, Wrench, Send, Loader2, Shield, X, RotateCcw } from 'lucide-react'
 import type { Agent } from '@/api/types'
 
 const MODELS = [
@@ -37,7 +38,11 @@ function AgentForm({ agent, onSave, onClose }: { agent?: Agent; onSave: (data: P
     avatar_color: agent?.avatar_color || '#6366f1',
     max_output_tokens: agent?.max_output_tokens ?? 4096,
     guardrail_keywords: agent?.guardrail_keywords || [],
+    input_guardrail_keywords: agent?.input_guardrail_keywords || [],
+    max_input_length: agent?.max_input_length ?? 0,
+    response_format: agent?.response_format ?? 'text',
     _guardrailInput: '',
+    _inputGuardrailInput: '',
   })
 
   const toggleTool = (toolName: string) => {
@@ -113,7 +118,7 @@ function AgentForm({ agent, onSave, onClose }: { agent?: Agent; onSave: (data: P
       </div>
 
       <div className="space-y-3 p-3 bg-orange-50 rounded-lg border border-orange-100">
-        <Label className="flex items-center gap-1 text-orange-700"><Shield className="h-3.5 w-3.5" />Guardrails</Label>
+        <Label className="flex items-center gap-1 text-orange-700"><Shield className="h-3.5 w-3.5" />Guardrails &amp; Output Format</Label>
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
           <div>
             <Label className="text-xs text-gray-500">Max output tokens</Label>
@@ -121,7 +126,14 @@ function AgentForm({ agent, onSave, onClose }: { agent?: Agent; onSave: (data: P
               onChange={e => setForm(f => ({ ...f, max_output_tokens: parseInt(e.target.value) || 4096 }))} />
           </div>
           <div>
-            <Label className="text-xs text-gray-500">Blocked keywords (press Enter to add)</Label>
+            <Label className="text-xs text-gray-500">Max input length (0 = unlimited)</Label>
+            <Input type="number" min={0} max={50000} value={form.max_input_length}
+              onChange={e => setForm(f => ({ ...f, max_input_length: parseInt(e.target.value) || 0 }))} />
+          </div>
+        </div>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <div>
+            <Label className="text-xs text-gray-500">Blocked output keywords (Enter to add)</Label>
             <Input
               value={form._guardrailInput}
               onChange={e => setForm(f => ({ ...f, _guardrailInput: e.target.value }))}
@@ -132,20 +144,55 @@ function AgentForm({ agent, onSave, onClose }: { agent?: Agent; onSave: (data: P
               }}
               placeholder="e.g. confidential"
             />
+            {form.guardrail_keywords.length > 0 && (
+              <div className="flex flex-wrap gap-1 mt-1">
+                {form.guardrail_keywords.map(kw => (
+                  <span key={kw} className="flex items-center gap-1 px-2 py-0.5 bg-orange-100 text-orange-700 rounded text-xs">
+                    {kw}
+                    <button onClick={() => setForm(f => ({ ...f, guardrail_keywords: f.guardrail_keywords.filter(k => k !== kw) }))}>
+                      <X className="h-3 w-3" />
+                    </button>
+                  </span>
+                ))}
+              </div>
+            )}
+          </div>
+          <div>
+            <Label className="text-xs text-gray-500">Blocked input keywords (Enter to add)</Label>
+            <Input
+              value={form._inputGuardrailInput}
+              onChange={e => setForm(f => ({ ...f, _inputGuardrailInput: e.target.value }))}
+              onKeyDown={e => {
+                if (e.key === 'Enter' && form._inputGuardrailInput.trim()) {
+                  setForm(f => ({ ...f, input_guardrail_keywords: [...f.input_guardrail_keywords, f._inputGuardrailInput.trim()], _inputGuardrailInput: '' }))
+                }
+              }}
+              placeholder="e.g. jailbreak"
+            />
+            {form.input_guardrail_keywords.length > 0 && (
+              <div className="flex flex-wrap gap-1 mt-1">
+                {form.input_guardrail_keywords.map(kw => (
+                  <span key={kw} className="flex items-center gap-1 px-2 py-0.5 bg-red-100 text-red-700 rounded text-xs">
+                    {kw}
+                    <button onClick={() => setForm(f => ({ ...f, input_guardrail_keywords: f.input_guardrail_keywords.filter(k => k !== kw) }))}>
+                      <X className="h-3 w-3" />
+                    </button>
+                  </span>
+                ))}
+              </div>
+            )}
           </div>
         </div>
-        {form.guardrail_keywords.length > 0 && (
-          <div className="flex flex-wrap gap-1">
-            {form.guardrail_keywords.map(kw => (
-              <span key={kw} className="flex items-center gap-1 px-2 py-0.5 bg-orange-100 text-orange-700 rounded text-xs">
-                {kw}
-                <button onClick={() => setForm(f => ({ ...f, guardrail_keywords: f.guardrail_keywords.filter(k => k !== kw) }))}>
-                  <X className="h-3 w-3" />
-                </button>
-              </span>
-            ))}
-          </div>
-        )}
+        <div>
+          <Label className="text-xs text-gray-500">Output format</Label>
+          <Select value={form.response_format} onValueChange={v => setForm(f => ({ ...f, response_format: v as 'text' | 'json' }))}>
+            <SelectTrigger className="mt-1 h-8 text-xs"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="text">Text (default)</SelectItem>
+              <SelectItem value="json">JSON — forces structured output (use for router agents)</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
       </div>
 
       <div>
@@ -160,35 +207,113 @@ function AgentForm({ agent, onSave, onClose }: { agent?: Agent; onSave: (data: P
       </div>
 
       <div className="flex gap-3 pt-2">
-        <Button onClick={() => { const { _guardrailInput, ...data } = form; onSave(data) }} className="flex-1">Save Agent</Button>
+        <Button onClick={() => { const { _guardrailInput, _inputGuardrailInput, ...data } = form; onSave(data) }} className="flex-1">Save Agent</Button>
         <Button variant="outline" onClick={onClose}>Cancel</Button>
       </div>
     </div>
   )
 }
 
-function TestPanel({ agent, onClose }: { agent: Agent; onClose: () => void }) {
-  const [prompt, setPrompt] = useState('')
-  const [result, setResult] = useState('')
+function ChatPanel({ agent }: { agent: Agent }) {
+  const [messages, setMessages] = useState<ChatMessage[]>([])
+  const [input, setInput] = useState('')
   const testAgent = useTestAgent()
+  const bottomRef = useRef<HTMLDivElement>(null)
 
-  const handleTest = async () => {
-    const res = await testAgent.mutateAsync({ id: agent.id, prompt })
-    setResult(res.output || 'No output')
+  useEffect(() => {
+    bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
+  }, [messages, testAgent.isPending])
+
+  const send = async () => {
+    const text = input.trim()
+    if (!text || testAgent.isPending) return
+    setInput('')
+    const nextHistory: ChatMessage[] = [...messages, { role: 'user', content: text }]
+    setMessages(nextHistory)
+    try {
+      const res = await testAgent.mutateAsync({
+        id: agent.id,
+        prompt: text,
+        history: messages,
+      })
+      setMessages(prev => [...prev, { role: 'assistant', content: res.output || '(no output)' }])
+    } catch {
+      setMessages(prev => [...prev, { role: 'assistant', content: '⚠ Error: could not reach agent.' }])
+    }
+  }
+
+  const handleKey = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send() }
   }
 
   return (
-    <div className="space-y-4">
-      <p className="text-sm text-gray-500">Test agent with a prompt (memory disabled for tests)</p>
-      <Textarea value={prompt} onChange={e => setPrompt(e.target.value)} placeholder="Enter your test prompt..." className="h-24" />
-      <Button onClick={handleTest} disabled={!prompt || testAgent.isPending} className="w-full">
-        {testAgent.isPending ? <><Loader2 className="h-4 w-4 animate-spin mr-2" />Running...</> : <><Send className="h-4 w-4 mr-2" />Run Test</>}
-      </Button>
-      {result && (
-        <div className="bg-gray-50 rounded-lg p-4 text-sm whitespace-pre-wrap max-h-60 overflow-y-auto border">
-          {result}
-        </div>
-      )}
+    <div className="flex flex-col h-[520px]">
+      {/* chat history */}
+      <div className="flex-1 overflow-y-auto space-y-3 pr-1 py-2">
+        {messages.length === 0 && (
+          <div className="flex flex-col items-center justify-center h-full text-gray-400 gap-2">
+            <div className="h-12 w-12 rounded-full flex items-center justify-center text-white text-xl font-bold"
+              style={{ backgroundColor: agent.avatar_color }}>
+              {agent.name[0].toUpperCase()}
+            </div>
+            <p className="text-sm">Say hello to <span className="font-medium text-gray-600">{agent.name}</span></p>
+            <p className="text-xs">Each message carries the full conversation context.</p>
+          </div>
+        )}
+        {messages.map((msg, i) => (
+          <div key={i} className={`flex gap-2 ${msg.role === 'user' ? 'flex-row-reverse' : 'flex-row'}`}>
+            {msg.role === 'assistant' && (
+              <div className="h-7 w-7 shrink-0 rounded-full flex items-center justify-center text-white text-xs font-bold mt-0.5"
+                style={{ backgroundColor: agent.avatar_color }}>
+                {agent.name[0].toUpperCase()}
+              </div>
+            )}
+            <div className={`max-w-[78%] rounded-2xl px-3.5 py-2.5 text-sm whitespace-pre-wrap leading-relaxed
+              ${msg.role === 'user'
+                ? 'bg-blue-600 text-white rounded-tr-sm'
+                : 'bg-gray-100 text-gray-800 rounded-tl-sm border border-gray-200'}`}>
+              {msg.content}
+            </div>
+          </div>
+        ))}
+        {testAgent.isPending && (
+          <div className="flex gap-2">
+            <div className="h-7 w-7 shrink-0 rounded-full flex items-center justify-center text-white text-xs font-bold"
+              style={{ backgroundColor: agent.avatar_color }}>
+              {agent.name[0].toUpperCase()}
+            </div>
+            <div className="bg-gray-100 border border-gray-200 rounded-2xl rounded-tl-sm px-4 py-3 flex gap-1.5 items-center">
+              <span className="h-2 w-2 bg-gray-400 rounded-full animate-bounce [animation-delay:0ms]" />
+              <span className="h-2 w-2 bg-gray-400 rounded-full animate-bounce [animation-delay:150ms]" />
+              <span className="h-2 w-2 bg-gray-400 rounded-full animate-bounce [animation-delay:300ms]" />
+            </div>
+          </div>
+        )}
+        <div ref={bottomRef} />
+      </div>
+
+      {/* divider + input */}
+      <div className="border-t pt-3 flex gap-2 items-center">
+        <button
+          onClick={() => setMessages([])}
+          title="Clear chat"
+          className="shrink-0 p-1.5 text-gray-400 hover:text-gray-600 rounded transition-colors"
+        >
+          <RotateCcw className="h-4 w-4" />
+        </button>
+        <Input
+          value={input}
+          onChange={e => setInput(e.target.value)}
+          onKeyDown={handleKey}
+          placeholder={`Message ${agent.name}…`}
+          className="flex-1"
+          disabled={testAgent.isPending}
+          autoFocus
+        />
+        <Button onClick={send} disabled={!input.trim() || testAgent.isPending} size="icon" className="shrink-0">
+          {testAgent.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
+        </Button>
+      </div>
     </div>
   )
 }
@@ -263,8 +388,8 @@ export function AgentsPage() {
                     </div>
                   </div>
                   <div className="flex shrink-0 gap-0.5">
-                    <Button variant="ghost" size="icon" onClick={() => setTestAgent(agent)} className="h-8 w-8" title="Test">
-                      <Zap className="h-4 w-4" />
+                    <Button variant="ghost" size="icon" onClick={() => setTestAgent(agent)} className="h-8 w-8" title="Chat">
+                      <MessageSquare className="h-4 w-4" />
                     </Button>
                     <Button variant="ghost" size="icon" onClick={() => setEditAgent(agent)} className="h-8 w-8" title="Edit">
                       <Edit className="h-4 w-4" />
@@ -306,9 +431,17 @@ export function AgentsPage() {
       </Dialog>
 
       <Dialog open={!!testAgent} onOpenChange={() => setTestAgent(null)}>
-        <DialogContent className="w-[95vw] max-w-lg">
-          <DialogHeader><DialogTitle>Test: {testAgent?.name}</DialogTitle></DialogHeader>
-          {testAgent && <TestPanel agent={testAgent} onClose={() => setTestAgent(null)} />}
+        <DialogContent className="w-[95vw] max-w-xl">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <div className="h-6 w-6 rounded-full flex items-center justify-center text-white text-xs font-bold"
+                style={{ backgroundColor: testAgent?.avatar_color }}>
+                {testAgent?.name[0].toUpperCase()}
+              </div>
+              Chat with {testAgent?.name}
+            </DialogTitle>
+          </DialogHeader>
+          {testAgent && <ChatPanel agent={testAgent} />}
         </DialogContent>
       </Dialog>
     </div>

@@ -31,15 +31,16 @@ export function useExecution(id: string) {
   })
 }
 
-export function useExecutionLogs(id: string) {
+export function useExecutionLogs(id: string, refetchInterval: number | false = false) {
   return useQuery({
     queryKey: executionKeys.logs(id),
     queryFn: () => apiClient.get(`/executions/${id}/logs`).then(r => r.data),
     enabled: !!id,
+    refetchInterval,
   })
 }
 
-export function useCancelExecution() {
+export function useDeleteExecution() {
   const qc = useQueryClient()
   return useMutation({
     mutationFn: (id: string) => apiClient.delete(`/executions/${id}`),

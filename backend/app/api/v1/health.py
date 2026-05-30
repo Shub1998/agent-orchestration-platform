@@ -1,5 +1,7 @@
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
+from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import settings
+from app.database import get_db
 import redis as sync_redis
 
 router = APIRouter()
@@ -23,6 +25,12 @@ async def health():
 
 
 @router.get("/tools")
-async def list_tools():
-    from app.core.tool_registry import list_available_tools
-    return list_available_tools()
+async def list_tools(db: AsyncSession = Depends(get_db)):
+    from app.core.tool_registry import list_available_tools, load_custom_tools_async
+    builtin = list_available_tools()
+    custom_tools = await load_custom_tools_async(db)
+    custom_entries = [
+        {"name": t.name, "description": t.description, "is_custom": True}
+        for t in custom_tools
+    ]
+    return builtin + custom_entries

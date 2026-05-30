@@ -3,7 +3,7 @@ from langchain_core.messages import SystemMessage, HumanMessage, AIMessage, Tool
 from langchain_openai import ChatOpenAI
 from langchain_anthropic import ChatAnthropic
 from app.core.state import AgentFlowState
-from app.core.tool_registry import get_tools
+from app.core.tool_registry import get_tools, load_custom_tools_sync, TOOL_REGISTRY
 from app.core.log_emitter import log_emitter
 from app.core.memory_manager import memory_manager
 from app.core.cost_calculator import extract_token_usage, calculate_cost
@@ -25,8 +25,23 @@ class AgentBuilder:
         max_output_tokens = agent_data.get("max_output_tokens", 4096)
         guardrail_keywords = agent_data.get("guardrail_keywords", [])
 
+        input_guardrail_keywords = agent_data.get("input_guardrail_keywords", [])
+        max_input_length = agent_data.get("max_input_length", 0)
+        response_format = agent_data.get("response_format", "text")
+
         tools = get_tools(tool_names)
-        llm = self._create_llm(provider, model, temperature, max_output_tokens, role=agent_data.get("role", "assistant"))
+
+        # Load any custom webhook tools requested but not in TOOL_REGISTRY
+        custom_names = [n for n in tool_names if n not in TOOL_REGISTRY]
+        if custom_names:
+            import re
+            from app.config import settings
+            db_path = re.sub(r"^sqlite\+aiosqlite:///", "", settings.DATABASE_URL)
+            custom = load_custom_tools_sync(db_path)
+            tools += [t for t in custom if t.name in custom_names]
+        llm = self._create_llm(provider, model, temperature, max_output_tokens,
+                               role=agent_data.get("role", "assistant"),
+                               response_format=response_format)
         llm_with_tools = llm.bind_tools(tools) if tools and provider != "demo" else llm
 
         def agent_node(state: AgentFlowState) -> dict:
@@ -34,6 +49,30 @@ class AgentBuilder:
             input_text = state.get("input", "")
             total_input_tokens = 0
             total_output_tokens = 0
+
+            # --- Input guardrails ---
+            if max_input_length and max_input_length > 0 and len(input_text) > max_input_length:
+                input_text = input_text[:max_input_length]
+                log_emitter.emit(execution_id, "info",
+                                 f"Input truncated to {max_input_length} characters",
+                                 agent_id=agent_id, agent_name=agent_name)
+
+            if input_guardrail_keywords:
+                input_lower = input_text.lower()
+                for kw in input_guardrail_keywords:
+                    if kw.lower() in input_lower:
+                        blocked_output = f"[Input blocked by guardrail: contains forbidden content]"
+                        log_emitter.emit(execution_id, "error",
+                                         f"Input guardrail triggered: keyword '{kw}' found in input",
+                                         agent_id=agent_id, agent_name=agent_name)
+                        log_emitter.emit(execution_id, "llm_end", blocked_output,
+                                         agent_id=agent_id, agent_name=agent_name,
+                                         metadata={"output": blocked_output, "input_tokens": 0,
+                                                   "output_tokens": 0, "cost_usd": 0.0})
+                        return {"messages": [], "current_agent": agent_name,
+                                "output": blocked_output, "iteration": state.get("iteration", 0) + 1,
+                                "approval_decision": None, "token_usage": {"input_tokens": 0,
+                                                                           "output_tokens": 0, "cost_usd": 0.0}}
 
             log_emitter.emit(
                 execution_id, "llm_start",
@@ -124,20 +163,13 @@ class AgentBuilder:
                 f"Agent '{agent_name}' completed — {total_input_tokens} in / {total_output_tokens} out tokens (${cost:.4f})",
                 agent_id=agent_id, agent_name=agent_name,
                 metadata={
-                    "output_preview": output[:300],
+                    "output": output[:4000],
+                    "truncated": len(output) > 4000,
                     "input_tokens": total_input_tokens,
                     "output_tokens": total_output_tokens,
                     "cost_usd": cost,
                     "model": model,
                 },
-            )
-            # Persist the full output as a dedicated event so the UI can render
-            # a readable inter-agent message thread (not just the raw log stream).
-            log_emitter.emit(
-                execution_id, "agent_message",
-                output[:4000],
-                agent_id=agent_id, agent_name=agent_name,
-                metadata={"model": model, "truncated": len(output) > 4000},
             )
 
             if memory_enabled and input_text and output:
@@ -158,7 +190,8 @@ class AgentBuilder:
 
         return agent_node
 
-    def _create_llm(self, provider: str, model: str, temperature: float, max_tokens: int = 4096, role: str = "assistant"):
+    def _create_llm(self, provider: str, model: str, temperature: float,
+                    max_tokens: int = 4096, role: str = "assistant", response_format: str = "text"):
         if provider == "demo":
             from app.core.demo_llm import DemoLLM
             return DemoLLM(agent_role=role)
@@ -169,12 +202,15 @@ class AgentBuilder:
                 max_tokens=max_tokens,
                 anthropic_api_key=settings.ANTHROPIC_API_KEY,
             )
-        return ChatOpenAI(
+        kwargs: dict = dict(
             model=model,
             temperature=temperature,
             max_tokens=max_tokens,
             openai_api_key=settings.OPENAI_API_KEY,
         )
+        if response_format == "json":
+            kwargs["model_kwargs"] = {"response_format": {"type": "json_object"}}
+        return ChatOpenAI(**kwargs)
 
 
 agent_builder = AgentBuilder()

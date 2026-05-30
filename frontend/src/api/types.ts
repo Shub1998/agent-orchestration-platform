@@ -16,6 +16,9 @@ export interface Agent {
   avatar_color: string
   max_output_tokens: number
   guardrail_keywords: string[]
+  input_guardrail_keywords: string[]
+  max_input_length: number
+  response_format: 'text' | 'json'
   created_at: string
   updated_at: string
 }
@@ -86,6 +89,12 @@ export interface LogEntry {
   error?: string
 }
 
+export interface TemplateAgentPreview {
+  name: string
+  role: string
+  color: string
+}
+
 export interface Template {
   slug: string
   name: string
@@ -93,9 +102,30 @@ export interface Template {
   icon: string
   category: string
   agent_count: number
+  is_custom: boolean
+  created_at?: string
+  difficulty?: 'beginner' | 'intermediate' | 'advanced'
+  tags?: string[]
+  use_cases?: string[]
+  agents_preview?: TemplateAgentPreview[]
 }
 
 export interface AvailableTool {
   name: string
   description: string
+  is_custom?: boolean
+}
+
+export interface CustomTool {
+  id: string
+  name: string
+  display_name: string
+  description: string
+  url: string
+  method: string
+  headers: Record<string, string>
+  body_template: string
+  is_active: boolean
+  created_at: string
+  updated_at: string
 }
