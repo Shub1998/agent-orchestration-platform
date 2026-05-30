@@ -58,7 +58,10 @@ export const useExecutionStore = create<ExecutionStore>((set, get) => ({
     ws.onerror = () => set({ status: 'failed' })
     ws.onclose = () => {
       const { status } = get()
-      if (status === 'running' || status === 'connecting') set({ status: 'completed' })
+      // Only override status if the WS dropped unexpectedly (no execution_complete received).
+      // Setting 'idle' triggers the LogStream auto-reconnect while execution is still active.
+      // If we already received execution_complete (status = 'completed'/'failed'), leave it alone.
+      if (status === 'running' || status === 'connecting') set({ status: 'idle' })
     }
 
     set({ ws })

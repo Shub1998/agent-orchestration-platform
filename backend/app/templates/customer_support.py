@@ -41,7 +41,7 @@ async def create_customer_support(db: AsyncSession) -> dict:
                 "Provide clear next steps and set realistic expectations."
             ),
             model="gpt-4o-mini", provider="openai", temperature=0.7,
-            max_iterations=5, memory_enabled=True, tools=["get_current_datetime"],
+            max_iterations=5, memory_enabled=False, tools=["get_current_datetime"],
             avatar_color="#10b981",
             memory_collection=f"agent_{billing_id.replace('-', '_')}",
         ),
@@ -56,7 +56,7 @@ async def create_customer_support(db: AsyncSession) -> dict:
                 "Document workarounds when direct fixes aren't available."
             ),
             model="gpt-4o-mini", provider="openai", temperature=0.4,
-            max_iterations=8, memory_enabled=True, tools=["web_search"],
+            max_iterations=8, memory_enabled=False, tools=["web_search"],
             avatar_color="#ef4444",
             memory_collection=f"agent_{tech_id.replace('-', '_')}",
         ),
@@ -71,7 +71,7 @@ async def create_customer_support(db: AsyncSession) -> dict:
                 "Look up relevant documentation or information when needed."
             ),
             model="gpt-4o-mini", provider="openai", temperature=0.7,
-            max_iterations=5, memory_enabled=True, tools=["web_search"],
+            max_iterations=5, memory_enabled=False, tools=["web_search"],
             avatar_color="#6366f1",
             memory_collection=f"agent_{general_id.replace('-', '_')}",
         ),

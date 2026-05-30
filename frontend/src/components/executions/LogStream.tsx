@@ -52,9 +52,11 @@ export function LogStream({ executionId, executionStatus }: { executionId: strin
   const { logs, status, startStream } = useExecutionStore()
   const bottomRef = useRef<HTMLDivElement>(null)
 
-  // REST logs: persisted in SQLite — used as baseline and gap-fill.
-  // Invalidated when approval is submitted so new cycle logs appear.
-  const { data: restLogs, refetch: refetchRestLogs } = useExecutionLogs(executionId)
+  const isActive = executionStatus === 'running' || executionStatus === 'pending' || executionStatus === 'awaiting_approval'
+
+  // REST logs: poll every 2s while execution is active (catches events missed by WS pub/sub race).
+  // Falls back to a one-shot fetch once terminal.
+  const { data: restLogs, refetch: refetchRestLogs } = useExecutionLogs(executionId, isActive ? 2000 : false)
 
   useEffect(() => {
     const isTerminal = executionStatus === 'completed' || executionStatus === 'failed' || executionStatus === 'cancelled'
@@ -64,12 +66,14 @@ export function LogStream({ executionId, executionStatus }: { executionId: strin
     }
   }, [executionId])
 
-  // Auto-reconnect: if WS drops while execution is still active, reconnect
-  // and re-fetch REST logs to fill in any gap that occurred during the outage.
+  // Auto-reconnect: only if WS dropped unexpectedly (failed/idle) while execution is still active.
+  // Do NOT reconnect when status = 'completed' — the WS properly received execution_complete and
+  // React Query just hasn't polled the updated executionStatus yet (2s lag). Reconnecting here
+  // causes a status-oscillation loop (completed → reconnect → running → completed → …).
   useEffect(() => {
-    const wsIsDead = status === 'completed' || status === 'failed' || status === 'idle'
+    const wsDropped = status === 'failed' || status === 'idle'
     const executionIsActive = executionStatus ? ACTIVE_EXECUTION_STATUSES.has(executionStatus) : false
-    if (!wsIsDead || !executionIsActive) return
+    if (!wsDropped || !executionIsActive) return
 
     const timer = setTimeout(() => {
       refetchRestLogs()

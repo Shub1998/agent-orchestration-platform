@@ -1,4 +1,5 @@
 from celery import Celery
+from celery.signals import worker_ready
 from app.config import settings
 
 celery_app = Celery(
@@ -7,6 +8,18 @@ celery_app = Celery(
     backend=settings.CELERY_RESULT_BACKEND,
     include=["app.workers.execution_tasks", "app.workers.scheduled_tasks"],
 )
+
+@worker_ready.connect
+def _warmup_chroma(sender, **kwargs):
+    """Download the ChromaDB embedding model at worker startup so the first
+    execution isn't slow. The model is cached on disk after the first download."""
+    try:
+        from app.core.memory_manager import memory_manager
+        memory_manager._get_collection("_warmup")
+        print("[worker] ChromaDB embedding model ready")
+    except Exception as e:
+        print(f"[worker] ChromaDB warmup skipped: {e}")
+
 
 celery_app.conf.update(
     task_serializer="json",

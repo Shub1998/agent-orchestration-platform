@@ -8,8 +8,7 @@
 
 ### End-to-end workflow + Telegram live conversation
 
-<!-- Replace the line below with your actual GIF or video embed once recorded -->
-![AgentFlow Demo](docs/demo.gif)
+![AgentFlow Demo](demo.gif)
 
 > *Full walkthrough: agent creation → visual workflow builder → live multi-agent execution (Research + Summarizer Pipeline) → real-time log streaming → Telegram conversation with the bot.*
 
@@ -78,137 +77,24 @@ AgentFlow is a full-stack AI agent orchestration platform built for a production
 
 ### System Diagram
 
-```
-┌─────────────────────────────────────────────────────────────────────┐
-│                        Browser / Client                             │
-│                                                                     │
-│   ┌──────────────────┐  ┌────────────────┐  ┌──────────────────┐   │
-│   │  Workflow Builder │  │ Execution Logs │  │  Agent Manager   │   │
-│   │  (React Flow)     │  │ (WebSocket)    │  │  (CRUD + Test)   │   │
-│   └────────┬─────────┘  └───────┬────────┘  └────────┬─────────┘   │
-└────────────┼───────────────────┼────────────────────┼─────────────┘
-             │ HTTP REST          │ ws://               │ HTTP REST
-             ▼                   ▼                     ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│                      FastAPI  (port 8000)                           │
-│                                                                     │
-│   ┌──────────────┐  ┌─────────────────┐  ┌──────────────────────┐  │
-│   │  REST API v1  │  │ WS /ws/exec/{id}│  │  API-Key Middleware   │  │
-│   │  /agents      │  │  → Redis SUB    │  │  (optional)          │  │
-│   │  /workflows   │  └─────────────────┘  └──────────────────────┘  │
-│   │  /executions  │                                                  │
-│   │  /settings    │                                                  │
-│   └──────┬────────┘                                                 │
-└──────────┼──────────────────────────────────────────────────────────┘
-           │ dispatch task
-           ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│                   Celery Workers  +  Beat Scheduler                 │
-│                                                                     │
-│   run_workflow_task          resume_workflow_task                   │
-│   run_agent_direct_task      check_scheduled_workflows (Beat)       │
-│                              check_approval_timeouts  (Beat)        │
-└──────────────────────────────┬──────────────────────────────────────┘
-                               │ compile + invoke
-                               ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│                      LangGraph Runtime                              │
-│                                                                     │
-│  graph_compiler.py → StateGraph                                     │
-│                                                                     │
-│  ┌──────────────────────────────────────────────────────────────┐   │
-│  │  Each Node (agent_builder.py)                                │   │
-│  │                                                              │   │
-│  │  ① Input Guardrails (keyword block + length check)          │   │
-│  │  ② ChromaDB memory retrieval                                │   │
-│  │  ③ LLM call (OpenAI / Anthropic)  ← tool_calls loop        │   │
-│  │  ④ Tool execution (web_search, calculator, scraper, …)      │   │
-│  │  ⑤ Output Guardrails (keyword block)                        │   │
-│  │  ⑥ Redis PUBLISH (log event)                                │   │
-│  │  ⑦ ChromaDB memory store                                    │   │
-│  └──────────────────────────────────────────────────────────────┘   │
-│                                                                     │
-│  Conditional routing: edge conditions → router agent JSON output    │
-│  HITL nodes: interrupt() → awaiting_approval → resume via API       │
-│  Checkpointing: SqliteSaver persists state per thread_id            │
-└─────────────────────────────────────────────────────────────────────┘
-           │                              │
-           ▼                              ▼
-    ┌─────────────┐               ┌──────────────┐
-    │    Redis    │               │    SQLite    │
-    │  pub/sub    │               │  (app data)  │
-    │  rate limit │               │  checkpoint  │
-    └─────────────┘               └──────────────┘
-           │
-           ▼
-    ┌─────────────────┐
-    │   ChromaDB      │
-    │  (vector store) │
-    └─────────────────┘
+![AgentFlow Architecture](docs/architecture.png)
 
-  ┌────────────────────────┐
-  │  Telegram Bot Service  │  ← separate docker-compose service
-  │  (python-telegram-bot) │  ← polls Telegram API
-  │  message → Celery task │
-  │  result  → bot.reply() │
-  └────────────────────────┘
-```
+| Layer | Components |
+|---|---|
+| **Browser** | Workflow Builder (React Flow), Execution Logs (WebSocket), Agent Manager |
+| **FastAPI** | REST API v1, WebSocket monitor → Redis SUBSCRIBE, API-Key middleware |
+| **Celery** | `run_workflow_task`, `run_agent_direct_task`, Beat scheduler (scheduled triggers + HITL timeouts) |
+| **LangGraph** | `graph_compiler.py` → StateGraph, per-node guardrails → LLM → tools → Redis PUBLISH |
+| **Data stores** | Redis (pub/sub, broker, rate limit), SQLite (app data + checkpoints), ChromaDB (vectors) |
+| **Telegram** | Isolated docker-compose service; message → Celery task → bot.reply() |
 
 ### Execution Flow
 
-```
-User / Telegram / REST API
-        │
-        │  POST /workflows/{id}/trigger  {"input": "..."}
-        ▼
-  FastAPI creates Execution record (status=running)
-        │
-        │  celery.delay(run_workflow_task, execution_id)
-        ▼
-  Celery Worker
-        │
-        │  Load Workflow + Agents from SQLite
-        │  graph_compiler.py → compile StateGraph
-        │  asyncio.new_event_loop().run_until_complete(graph.ainvoke(...))
-        ▼
-  LangGraph executes node by node:
-
-    [Start] ──► [Agent A] ──► [Agent B] ──► [End]
-                    │                │
-                  tools           conditional
-                  memory           routing
-
-        │  Each step: log_emitter.emit(event) → Redis PUBLISH
-        ▼
-  FastAPI WS handler (monitor.py)
-        │
-        │  Redis SUBSCRIBE execution:{id}:logs
-        │  forward each message to the WebSocket client
-        ▼
-  Browser LogStream component renders live
-        │
-  On completion:
-        │  Celery updates Execution status=completed + final_output
-        │  If triggered from Telegram: bot replies to chat
-        ▼
-  Done
-```
+![Execution Flow](docs/execution-flow.png)
 
 ### Data Flow: Real-time Streaming
 
-```
-  LangGraph node          Redis            FastAPI WS          Browser
-       │                    │                  │                  │
-       │─ emit("llm_start") ►│                  │                  │
-       │                    │─ PUBLISH ────────►│                  │
-       │                    │                  │─ send_json() ────►│
-       │─ emit("tool_call") ►│                  │                  │
-       │                    │─ PUBLISH ────────►│                  │
-       │                    │                  │─ send_json() ────►│
-       │─ emit("llm_end")   ►│                  │                  │
-       │                    │─ PUBLISH ────────►│                  │
-       │                    │                  │─ send_json() ────►│
-```
+![Data Flow](docs/data-flow.png)
 
 ---
 
