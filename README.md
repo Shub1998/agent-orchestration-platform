@@ -11,6 +11,8 @@
 ![AgentFlow Demo](demo.gif)
 
 > *Full walkthrough: agent creation → visual workflow builder → live multi-agent execution (Research + Summarizer Pipeline) → real-time log streaming → Telegram conversation with the bot.*
+>
+> 📹 [Watch full demo with voiceover (MP4)](docs/voiceover/agentflow-demo-final.mp4)
 
 **What the recording shows:**
 
@@ -21,6 +23,8 @@
 | Live execution | Log stream: LLM calls, tool calls, inter-agent handoff, token cost |
 | Conditional routing | Customer Support Triage — billing input routes to Billing Specialist |
 | Telegram | Live message to bot → execution runs → bot replies in chat |
+
+📖 **New to AgentFlow?** Start with the [User Handbook](HANDBOOK.md) — a step-by-step guide covering every feature from first run to Telegram integration.
 
 ---
 
@@ -67,7 +71,7 @@ AgentFlow is a full-stack AI agent orchestration platform built for a production
 | **LangGraph Runtime** | Compiles the visual graph into a real, executable StateGraph with checkpointing |
 | **Async Task Queue** | Celery workers run LLM chains without blocking the API; Beat handles scheduled triggers |
 | **Live Log Streaming** | Every token, tool call, and routing decision streams to the browser via WebSocket |
-| **Messaging Channels** | Telegram (built-in); Slack and Discord wiring points included |
+| **Messaging Channels** | Telegram (built-in); Slack extension point documented; webhook trigger built-in |
 | **Memory** | Per-agent ChromaDB vector store persists context across executions |
 | **Guardrails** | Input/output keyword blocking and length limits on every agent node |
 
@@ -109,7 +113,7 @@ LangGraph was chosen over CrewAI, AutoGen, and a hand-rolled async executor.
 | **Graph topology** | Arbitrary DAG + cycles + fan-out + conditionals | Fixed crew→task | Conversation chains | Unlimited |
 | **Visual mapping** | 1:1 with React Flow nodes/edges | Hard to serialize | N/A | Complex |
 | **Checkpointing** | Built-in `SqliteSaver` / `PostgresSaver` | External only | External only | Build it yourself |
-| **Streaming** | Native `astream()` + `astream_events()` | Limited | Limited | Build it yourself |
+| **Streaming** | Native `astream()` (events via Redis pub/sub) | Limited | Limited | Build it yourself |
 | **State management** | Typed `TypedDict`, persisted per `thread_id` | Per-crew memory | Per-conversation | Build it yourself |
 | **HITL (approval)** | Native `interrupt()` + `Command(resume=…)` | Not supported | Not supported | Build it yourself |
 | **Conditional routing** | `add_conditional_edges()` with routing function | Manual | N/A | Build it yourself |
@@ -119,7 +123,7 @@ LangGraph was chosen over CrewAI, AutoGen, and a hand-rolled async executor.
 
 The visual canvas (React Flow) and the execution runtime (LangGraph) share the same mental model: **nodes and edges**. A node in the UI becomes a LangGraph node. A conditional edge in the UI becomes `add_conditional_edges()`. This zero-impedance mapping means:
 
-- `graph_compiler.py` converts a DB `Workflow` → `CompiledStateGraph` in ~80 lines
+- `graph_compiler.py` converts a DB `Workflow` → `CompiledStateGraph` in ~270 lines (nodes, edges, approval gates, conditional routing)
 - Every visual change a user makes immediately reflects in runtime behaviour
 - No translation layer, no "export to YAML then re-parse" step
 
@@ -257,7 +261,7 @@ TRIGGER_RATE_LIMIT=30             # Max triggers per minute per workflow
 DEBUG=false
 ```
 
-**Messaging channel tokens** (Slack, Discord, etc.) are stored in the `platform_settings` database table and can be configured at runtime through **Settings → Messaging Channels** in the UI — no restart required.
+**Messaging channel tokens** (Telegram, Slack, etc.) are stored in the `platform_settings` database table and can be configured at runtime through **Settings → Messaging Channels** in the UI — no restart required.
 
 ---
 
@@ -281,7 +285,7 @@ DEBUG=false
 | **Max iterations** | Tool call loop limit |
 | **Output format** | `text` (default) or `json` (forces structured output — ideal for router agents) |
 | **Memory** | Per-agent ChromaDB collection, persisted across runs |
-| **Tools** | `web_search`, `web_scraper`, `calculator`, `datetime`, `send_telegram`, custom HTTP webhooks |
+| **Tools** | `web_search`, `web_scraper`, `calculator`, `get_current_datetime`, `send_telegram_message`, `http_request`, `json_parser`, `text_summarizer`, custom HTTP webhooks |
 | **Input guardrails** | Block inputs containing specific keywords; enforce max length |
 | **Output guardrails** | Block responses containing specific keywords; enforce max length |
 | **Test** | Run any prompt against the agent inline without a full workflow |
@@ -292,12 +296,12 @@ Every execution streams log events live via WebSocket:
 
 | Event type | Colour | Example |
 |---|---|---|
-| `llm_start` | Blue | `[Research Agent] Calling GPT-4o-mini…` |
-| `tool_call` | Yellow | `[Research Agent] → web_search("AI breakthroughs 2024")` |
-| `tool_result` | Yellow | `[Research Agent] ← 3 results found` |
-| `llm_end` | Green | `[Research Agent] completed in 4.2s` |
-| `routing` | Indigo | `Routing → billing (confidence: 0.94)` |
-| `error` | Red | `[Agent] Output blocked by guardrail: "harmful"` |
+| `llm_start` | Blue | `[Research Agent] starting (gpt-4o-mini)` |
+| `tool_call` | Yellow | `[Research Agent] Calling tool: web_search` |
+| `llm_end` | Green | `[Research Agent] completed — 512 in / 280 out tokens ($0.0003)` |
+| `approval` | Amber | `⏸ [Human Review] Waiting for human approval` |
+| `info` | Grey | `Router: condition 'billing' exact-matched JSON 'category'` |
+| `error` | Red | `[Agent] Output blocked by guardrail: keyword found` |
 
 Execution history is persisted; past logs are paginated from the database.
 
@@ -308,33 +312,47 @@ Configure tokens at runtime via **Settings → Messaging Channels**:
 | Channel | Status | Trigger type |
 |---|---|---|
 | **Telegram** | Built-in | `telegram` |
-| **Slack** | Token wiring included | `slack` |
-| **Discord** | Token wiring included | `discord` |
+| **Slack** | Extension point documented | `slack` |
+| **Webhook** | Built-in (any HTTP caller) | `webhook` |
 
 ### Pre-built Templates
 
-**Research + Summarizer Pipeline**
-
+**1. Research + Summarizer Pipeline** *(beginner)*
 ```
-[Start] ──► [Research Agent] ──► [Summarizer Agent] ──► [End]
-                  │
-            tools: web_search
-                   web_scraper
+[Start] ──► [Researcher] ──► [Summarizer] ──► [End]
+                 │
+           tools: web_search, web_scraper
 ```
+Researcher gathers information from the web; Summarizer produces a concise executive summary.
 
-The Research agent searches and scrapes sources; the Summarizer synthesises findings into an executive summary. Both store their outputs in per-agent memory.
-
-**Customer Support Triage**
-
+**2. Customer Support Triage** *(intermediate)*
 ```
                          ┌──billing──► [Billing Specialist] ──► [End]
 [Start] ──► [Triage] ────┤
                          ├──technical► [Tech Support]       ──► [End]
-                         │
                          └──general──► [General Support]    ──► [End]
 ```
+Triage outputs `{"category": "billing"|"technical"|"general"}`. `graph_compiler.py` wires `add_conditional_edges()` from the edge condition strings automatically.
 
-Triage uses JSON output mode to classify the issue. `graph_compiler.py` wires `add_conditional_edges()` automatically from the edge condition strings — no code change needed when re-routing.
+**3. Content Marketing Pipeline** *(beginner)*
+```
+[Start] ──► [Topic Researcher] ──► [Content Writer] ──► [Senior Editor] ──► [End]
+```
+Researcher gathers source material; Writer drafts; Editor polishes for publication.
+
+**4. Data Intelligence Report** *(intermediate)*
+```
+[Start] ──► [Data Collector] ──► [Data Analyst] ──► [Report Generator] ──► [End]
+```
+Gathers raw data from the web, identifies trends, produces an executive-ready intelligence brief.
+
+**5. Content with Human Approval** *(advanced — HITL)*
+```
+[Start] ──► [Brief Researcher] ──► [Content Drafter] ──► [Human Review ⏸] ──► [Publisher] ──► [End]
+                                                                │
+                                                      rejected ─┘ (loops back to Drafter with feedback)
+```
+Execution pauses at the Approval node. Reviewer approves (continues to Publisher) or rejects with feedback (Drafter revises and re-submits).
 
 ---
 
@@ -361,7 +379,7 @@ make demo
    ```
    My invoice shows an incorrect charge from last month
    ```
-3. Watch Triage Agent output `{"route": "billing"}` → graph routes to Billing Specialist
+3. Watch Triage Agent output `{"category": "billing"}` → graph routes to Billing Specialist
 
 **Step 3 — Telegram** *(if token configured)*
 
@@ -504,7 +522,7 @@ agent-orchestration-platform/
 | `GET` | `/agents/{id}` | Get agent |
 | `PATCH` | `/agents/{id}` | Update agent |
 | `DELETE` | `/agents/{id}` | Delete agent |
-| `POST` | `/agents/{id}/test` | Test agent with `{"input": "..."}` |
+| `POST` | `/agents/{id}/test` | Test agent with `{"prompt": "..."}` |
 | `GET` | `/agents/{id}/memory` | View stored memory |
 | `DELETE` | `/agents/{id}/memory` | Clear agent memory |
 
@@ -518,7 +536,7 @@ agent-orchestration-platform/
 | `PATCH` | `/workflows/{id}` | Update metadata |
 | `DELETE` | `/workflows/{id}` | Delete workflow |
 | `POST` | `/workflows/{id}/graph` | Save visual graph `{nodes, edges}` |
-| `POST` | `/workflows/{id}/trigger` | Start execution `{"input": "..."}` |
+| `POST` | `/workflows/{id}/trigger` | Start execution `{"prompt": "..."}` |
 
 ### Executions
 
@@ -527,8 +545,7 @@ agent-orchestration-platform/
 | `GET` | `/executions` | List executions (filterable by workflow) |
 | `GET` | `/executions/{id}` | Get execution detail |
 | `GET` | `/executions/{id}/logs` | Paginated log entries |
-| `POST` | `/executions/{id}/approve` | Approve HITL node |
-| `POST` | `/executions/{id}/reject` | Reject HITL node |
+| `POST` | `/executions/{id}/approve` | Approve or reject HITL node `{"decision": "approve"\|"reject", "comment": "..."}` |
 | `WS` | `/ws/executions/{id}/logs` | Real-time log stream |
 
 ### Templates & Tools
@@ -746,7 +763,7 @@ SQLAlchemy 2.0 async abstracts the driver completely. The LangGraph checkpointer
 
 - The bot can restart independently without taking down the API
 - Both processes share state through the database and Celery tasks — no direct coupling
-- Adding another channel (Slack, Discord) follows the same pattern: one new service, no API changes
+- Adding another channel (Slack, WhatsApp) follows the same pattern: one new service, no API changes
 
 ### Rate Limiting: Redis sliding window, configurable per deployment
 
