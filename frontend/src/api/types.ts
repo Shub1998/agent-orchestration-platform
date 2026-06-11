@@ -121,10 +121,12 @@ export interface CustomTool {
   name: string
   display_name: string
   description: string
+  tool_type: 'webhook' | 'code'
   url: string
   method: string
   headers: Record<string, string>
   body_template: string
+  code: string
   is_active: boolean
   created_at: string
   updated_at: string

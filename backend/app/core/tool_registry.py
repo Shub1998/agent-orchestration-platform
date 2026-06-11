@@ -48,37 +48,66 @@ def _make_webhook_tool(name: str, description: str, url: str, method: str, heade
     return StructuredTool.from_function(func=_run, name=name, description=description)
 
 
+def _make_code_tool(name: str, description: str, code: str) -> BaseTool:
+    from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
+
+    def _run(input: str) -> str:
+        try:
+            namespace: dict = {}
+            exec(compile(code, "<custom_tool>", "exec"), {"__builtins__": __builtins__}, namespace)  # noqa: S102
+            if "run" not in namespace or not callable(namespace["run"]):
+                return "Error: code must define a callable function named 'run(input: str) -> str'"
+            with ThreadPoolExecutor(max_workers=1) as executor:
+                future = executor.submit(namespace["run"], input)
+                try:
+                    result = future.result(timeout=10)
+                    return str(result)
+                except FuturesTimeoutError:
+                    return "Error: code execution timed out (10s limit)"
+        except Exception as e:
+            return f"Error executing tool code: {str(e)}"
+
+    return StructuredTool.from_function(func=_run, name=name, description=description)
+
+
+def _build_tool(name: str, description: str, tool_type: str, url: str, method: str, headers: dict, body_template: str, code: str) -> BaseTool:
+    if tool_type == "code":
+        return _make_code_tool(name, description, code or "")
+    return _make_webhook_tool(name, description, url or "", method or "POST", headers, body_template or "")
+
+
 def load_custom_tools_sync(db_path: str) -> list[BaseTool]:
-    """Load active custom webhook tools from SQLite (sync, for Celery workers)."""
+    """Load active custom tools from SQLite (sync, for Celery workers)."""
     tools: list[BaseTool] = []
     try:
         conn = sqlite3.connect(db_path)
         cur = conn.cursor()
         cur.execute(
-            "SELECT name, description, url, method, headers, body_template "
+            "SELECT name, description, tool_type, url, method, headers, body_template, code "
             "FROM custom_tools WHERE is_active=1"
         )
         rows = cur.fetchall()
         conn.close()
-        for name, description, url, method, headers_json, body_template in rows:
+        for name, description, tool_type, url, method, headers_json, body_template, code in rows:
             headers = json.loads(headers_json) if headers_json else {}
-            tools.append(_make_webhook_tool(name, description, url, method, headers, body_template or ""))
+            tools.append(_build_tool(name, description, tool_type or "webhook", url or "", method or "POST", headers, body_template or "", code or ""))
     except Exception:
         pass
     return tools
 
 
 async def load_custom_tools_async(db) -> list[BaseTool]:
-    """Load active custom webhook tools from async DB session (for FastAPI)."""
+    """Load active custom tools from async DB session (for FastAPI)."""
     from sqlalchemy import select
     from app.models.custom_tool import CustomTool
     tools: list[BaseTool] = []
     try:
         result = await db.execute(select(CustomTool).where(CustomTool.is_active == True))  # noqa: E712
         for ct in result.scalars().all():
-            tools.append(_make_webhook_tool(
-                ct.name, ct.description, ct.url, ct.method,
-                ct.headers or {}, ct.body_template or "",
+            tools.append(_build_tool(
+                ct.name, ct.description, ct.tool_type or "webhook",
+                ct.url or "", ct.method or "POST",
+                ct.headers or {}, ct.body_template or "", ct.code or "",
             ))
     except Exception:
         pass

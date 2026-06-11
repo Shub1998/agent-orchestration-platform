@@ -35,6 +35,8 @@ async def _migrate_schema(conn):
         ("agents", "input_guardrail_keywords", "JSON NOT NULL DEFAULT '[]'"),
         ("agents", "max_input_length",          "INTEGER NOT NULL DEFAULT 0"),
         ("agents", "response_format",           "VARCHAR(20) NOT NULL DEFAULT 'text'"),
+        ("custom_tools", "tool_type",           "VARCHAR(20) NOT NULL DEFAULT 'webhook'"),
+        ("custom_tools", "code",                "TEXT"),
     ]
     for table, column, definition in migrations:
         try:

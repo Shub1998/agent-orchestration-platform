@@ -11,10 +11,12 @@ class CustomTool(Base):
     name = Column(String, unique=True, nullable=False)        # tool identifier (alphanum + _)
     display_name = Column(String, nullable=False)
     description = Column(Text, nullable=False)                # shown to the LLM
-    url = Column(String, nullable=False)
+    tool_type = Column(String, default="webhook")             # 'webhook' or 'code'
+    url = Column(String, nullable=True)
     method = Column(String, default="POST")                   # GET/POST/PUT/DELETE
     headers = Column(JSON, default=dict)
     body_template = Column(Text, default="")                  # {{input}} placeholder
+    code = Column(Text, nullable=True)                        # Python code for tool_type='code'
     is_active = Column(Boolean, default=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

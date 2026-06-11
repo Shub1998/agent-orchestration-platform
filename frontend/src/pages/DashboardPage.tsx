@@ -86,7 +86,7 @@ export function DashboardPage() {
                 <Zap className="h-4 w-4 md:h-6 md:w-6 text-green-600" />
               </div>
             </div>
-            <p className="text-xs md:text-sm text-gray-400 mt-2">{completedCount} completed today</p>
+            <p className="text-xs md:text-sm text-gray-400 mt-2">{completedCount} completed</p>
           </CardContent>
         </Card>
 
